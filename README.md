@@ -25,3 +25,9 @@ some way to show users what files they got
 ## how to run locally
 
 python 
+
+
+## Note for checkpoint 1 review
+
+Some info of this may be changed with time, I don't want to limit myself by choices I made earlier.
+Features and routes will be added and removed according to what I end up coding
