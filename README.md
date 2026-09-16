@@ -1,7 +1,7 @@
 # Secure Web-Based File Encryption and Management System
 
 ## Scope
-blablabla
+Web-based application that stores files safely with user authentication features. To ensure safety of files they are encrypted and only the ciphered data is written to server.
 
 ## Planned routes and features
 
