@@ -24,8 +24,15 @@ some way to show users what files they got
 
 ## how to run locally
 
-python 
+# on Linux/MacOS
+python3 -m venv venv
+source venv/bin/activate
+python3 \[whatever the app will be called\].py
 
+# on Windows
+python -m venv venv
+venv\Scripts\activate
+python3 \[whatever the app will be called\].py
 
 ## Note for checkpoint 1 review
 
