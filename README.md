@@ -1,38 +1,36 @@
-Secure Web-Based File Encryption and Management System
+# Secure Web-Based File Encryption and Management System
 
 ## Scope
 blablabla
 
 ## Planned routes and features
 
-POST /stuff
-GET /stuff2
-DELETE /stuff3
+- `POST /login` Login endpoint\
+- `POST /logout` Logout endpoint\
+- `POST /newaccount` Endpoint for creating an account\
+- `POST /files` Endpoint for uploading new files, needs to handle file size check and file "safety" check, include an error response for maximum files amount reached\
+- `GET /files/<file_id>` Endpoint for downloading new files, needs to handle ownership check\
+- `GET /files` Endpoint for listing files, needs to handle empty case, only lists user's files\
+- `DELETE /files/<file_id>` Endpoint for deleting files from server, needs to handle ownership check\
 
-Login
-Logout
-Create account
-Upload file that will be encrypted in server
-Download file that will be decrypted before download
-Delete files from server
-Show all files user has in the server --> needs to handle when user has no files 
-(notes for future me: error handling necessary includes: hard limit on file size uploaded, and amount of total files)
-
-AES-GCM encryption in the server
-Session based auth --> with input cleaning
-some way to show users what files they got
+AES-GCM encryption in the server with key generated from password\
+Session based auth with user input/upload cleaning\
+Users will have a unique id for verifying ownership alongside session tokens
 
 ## how to run locally
 
-# on Linux/MacOS
+### on Linux/MacOS
+```
 python3 -m venv venv
 source venv/bin/activate
-python3 \[whatever the app will be called\].py
-
-# on Windows
+python3 [whatever the app will be called].py
+```
+### on Windows
+```
 python -m venv venv
 venv\Scripts\activate
-python3 \[whatever the app will be called\].py
+python [whatever the app will be called].py
+```
 
 ## Note for checkpoint 1 review
 
