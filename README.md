@@ -7,7 +7,7 @@ Web-based application that stores files safely with user authentication features
 
 - `POST /login` Login endpoint
 - `POST /logout` Logout endpoint
-- `POST /newaccount` Endpoint for creating an account
+- `POST /register` Endpoint for creating an account
 - `POST /files` Endpoint for uploading new files, needs to handle file size check and file "safety" check, include an error response for maximum files amount reached
 - `GET /files/<file_id>` Endpoint for downloading new files, needs to handle ownership check
 - `GET /files` Endpoint for listing files, needs to handle empty case, only lists user's files
