@@ -1,30 +1,70 @@
 #Made by Victor Laino
-#student number 251773
-import argparse
-import sys
+#student number 251773iCVM
 import os
 import getpass
 import logging
+from flask import Flask, request, session, redirect, url_for
+import bcrypt
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
 
-try:
-    import bcrypt #password hashing
-except ImportError:
-    print("'bcrypt' not found. Please download with pip install bcrypt", file=sys.stderr)
-    sys.exit(1)
+# directories, locally simulates having some server structure
+MainDir = os.path.dirname(os.path.abspath(__file__)) #secure directory used
+db = os.path.join(MainDir, "databases", "main.db") #database
+fs = os.path.join(MainDir, "files_storage") #file storage server object
+lg = os.path.join(MainDir, "logging.log") #logging
 
-try:
-    from Crypto.Cipher import AES #AES encryption
-    from Crypto.Protocol.KDF import PBKDF2 #salting
-    from Crypto.Random import get_random_bytes #File encryption
-    from Crypto.Util.Padding import pad, unpad
-except ImportError:
-    print("'pycryptodome' not found. Please download with pip install pycryptodome", file=sys.stderr)
-    sys.exit(1)
+app = Flask(__name__)
 
-# Important paths
-SecDir = os.path.expanduser('~/.secure_dir') #secure directory used
-MPath = os.path.join(SecDir, 'masterpassword_hashed.dat') #where i store the hashed master password
-LPath = os.path.join(SecDir, 'secure_manager.log') #logs path
+@app.route("/", methods=["GET"])
+def welcomePage() #tell the user what this whole project is, two links -> sign in or register
+@app.route("/register", methods=["GET"])
+def registerPage() #registration page username and pw form + confirm password
+@app.route("/register", methods=["POST"])
+def register() #registration flow, check if input is good, does user already exist?, if yes add user to db and redirect to login page
+@app.route("/login", methods=["GET"])
+def loginPage() #login page, username and pw form
+@app.route("/login", methods=["POST"])
+def login() #login action, 1: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change.
+#2: check login, input given, correct usr and pw, show error if necessary, if works start session and redirect to personal page 
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout() #when user deciddes to log out, just close session and redirect to welcome page
+@app.route("/password_update", methods=["GET"])
+@login_required
+def pwchangePage() #when user decides OR is forced to change password, asks for usrname, old pw, new pw, new pw confirmation
+@app.route("/password_update", methods=["POST"])
+@login_required
+def pwchange() #mix of login and registration checks will be necessary
+@app.route("/files", methods=["GET"]) #this GET is harder because it needs to show files PERSONALIZED to user
+@login_required
+def userPage() #personal user space, will show all user files
+@app.route("/files", methods=["POST"])
+@login_required
+def upload() #opens window for file upload, file and user get checked, file name appears and "uploading" is shown while the file gets uploaded and encrypted, at end of upload db is updated
+#note: need a hard limit on filesize, filename length, files per user
+#once finished assign id and have path <file_id>
+@app.route("/files/<file_id>", methods=["GET"])
+@login_required
+def download() #check usr can actually download this, that file exists etc, then initiate decrypt and download
+@app.route("/files/<file_id>/delete", methods=["GET"])
+@login_required
+def deletePage() #are you sure you wanna delete this???? text appears somehow
+@app.route("/files/<file_id>/delete", methods=["DELETE"])
+@login_required
+def delete() #file gets deleted from server, db is updated
+
+if __name__ == "__main__":
+    if not os.path.exists(db):
+        init_db() #running app for the first time may end up 
+    if not os.path.exists(fs):
+        init_fs() #maybe not even needed, it just has to be a folder
+    if not os.path.exists(lg):
+        init_lg() #checkpoint 3 problem
+
+ app.run(port=5000, debug=False)
+# EVERYTHING AFTER THIS POINT IS OLD
 
 # salting
 SaltSize = 32
