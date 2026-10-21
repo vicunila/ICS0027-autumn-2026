@@ -4,6 +4,7 @@ import os
 import getpass
 import logging
 from flask import Flask, request, session, redirect, url_for
+from functools import wraps
 import bcrypt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -16,6 +17,14 @@ fs = os.path.join(MainDir, "files_storage") #file storage server object
 lg = os.path.join(MainDir, "logging.log") #logging
 
 app = Flask(__name__)
+
+def login_required(view):
+    @wraps(check)
+    def logincheck(*args, **kwargs):
+        if #"user not logged in"
+            return redirect(url_for('loginPage'))
+        return check(*args, **kwargs)
+    return logincheck
 
 @app.route("/", methods=["GET"])
 def welcomePage() #tell the user what this whole project is, two links -> sign in or register
