@@ -3,7 +3,7 @@
 import os
 import getpass
 import logging
-from flask import Flask, request, session, redirect, url_for
+from flask import Flask, request, session, redirect, url_for, render_template
 from functools import wraps
 import bcrypt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -16,53 +16,121 @@ db = os.path.join(MainDir, "databases", "main.db") #database
 fs = os.path.join(MainDir, "files_storage") #file storage server object
 lg = os.path.join(MainDir, "logging.log") #logging
 
+#logging in variables
+maxpwL = 20
+minpwL = 8
+maxusrnL = 20
+minusrnL = 5
+
+def init_db():
+    pass
+
+def init_fs():
+    pass
+
+def init_lg():
+    pass
+
 app = Flask(__name__)
 
 def login_required(view):
     @wraps(check)
     def logincheck(*args, **kwargs):
-        if #"user not logged in"
+        if  False: #"user not logged in" condition to be implemented
             return redirect(url_for('loginPage'))
         return check(*args, **kwargs)
     return logincheck
 
 @app.route("/", methods=["GET"])
-def welcomePage() #tell the user what this whole project is, two links -> sign in or register
+def welcomePage():
+    return render_template("mainpage.html") #tell the user what this whole project is, two links -> sign in or register
+
+# REGISTRATION
+
 @app.route("/register", methods=["GET"])
-def registerPage() #registration page username and pw form + confirm password
+def registerPage():
+    return render_template("registration.html") #registration page username and pw form + confirm password
+
 @app.route("/register", methods=["POST"])
-def register() #registration flow, check if input is good, does user already exist?, if yes add user to db and redirect to login page
+def register():  #registration flow, check if input is good, does user already exist?, if yes add user to db and redirect to login page
+    usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
+    pw = request.form.get("password", "")
+    pwconf = request.form.get("confirm password", "")
+    if (minusrnL < len(usrn) or len(usrn) > maxusrnL) or not usrn.isalnum():
+        return render_template("register.html", error="Invalid username"), 400
+    if len(pw) < minpwL or len(pw) > maxpwL:
+        return render_template("register.html", error="Invalid password"), 400
+    if pw != pwconf:
+        return render_template("register.html", error="Passwords do not match"), 400
+    PasswordBytes = bytearray(pw.encode('utf-8')) #encodes the password as bytes
+    hashedPassword = bcrypt.hashpw(bytes(PasswordBytes), bcrypt.gensalt(rounds=12))    
+    #to do: add user to db with hashed pw
+
+# LOGIN and LOGOUT
+
 @app.route("/login", methods=["GET"])
-def loginPage() #login page, username and pw form
+def loginPage():
+    return render_template("login.html") #login page, username and pw form
+
 @app.route("/login", methods=["POST"])
-def login() #login action, 1: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change.
-#2: check login, input given, correct usr and pw, show error if necessary, if works start session and redirect to personal page 
+def login(): #login action, 1: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change.
+    #2: check login, input given, correct usr and pw, show error if necessary, if works start session and redirect to personal page 
+    usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
+    pw = request.form.get("password", "")
+    if True: #add a check for db,increase counter for blocked user
+        user = (usrn, "hashed_password", 1)
+        session["user_id"] = 1 # 1 is a user id placeholder number
+        return redirect(url_for("userPage"))
+    return render_template("login.html", error="Invalid username or password"), 400    
+
 @app.route("/logout", methods=["POST"])
 @login_required
-def logout() #when user deciddes to log out, just close session and redirect to welcome page
+def logout():
+    session.clear()
+    return redirect(url_for("welcomePage"))
+
+# PW CHANGE, to be implemented checkpoint 3
+
 @app.route("/password_update", methods=["GET"])
 @login_required
-def pwchangePage() #when user decides OR is forced to change password, asks for usrname, old pw, new pw, new pw confirmation
+def pwchangePage():
+    return render_template("pwchange.html") #when user decides OR is forced to change password, asks for usrname, old pw, new pw, new pw confirmation
 @app.route("/password_update", methods=["POST"])
 @login_required
-def pwchange() #mix of login and registration checks will be necessary
+def pwchange():
+    pass #mix of login and registration checks will be necessary
+
+#UPLOAD
+
 @app.route("/files", methods=["GET"]) #this GET is harder because it needs to show files PERSONALIZED to user
 @login_required
-def userPage() #personal user space, will show all user files
+def userPage():
+    pass #personal user space, will show all user files
+
 @app.route("/files", methods=["POST"])
 @login_required
-def upload() #opens window for file upload, file and user get checked, file name appears and "uploading" is shown while the file gets uploaded and encrypted, at end of upload db is updated
+def upload():
+    pass #opens window for file upload, file and user get checked, file name appears and "uploading" is shown while the file gets uploaded and encrypted, at end of upload db is updated
 #note: need a hard limit on filesize, filename length, files per user
 #once finished assign id and have path <file_id>
+
+#DOWNLOAD
+
 @app.route("/files/<file_id>", methods=["GET"])
 @login_required
-def download() #check usr can actually download this, that file exists etc, then initiate decrypt and download
+def download():
+    pass #check usr can actually download this, that file exists etc, then initiate decrypt and download
+
+#DELETE
+
 @app.route("/files/<file_id>/delete", methods=["GET"])
 @login_required
-def deletePage() #are you sure you wanna delete this???? text appears somehow
+def deletePage():
+    pass #are you sure you wanna delete this???? text appears somehow
 @app.route("/files/<file_id>/delete", methods=["DELETE"])
 @login_required
-def delete() #file gets deleted from server, db is updated
+def delete():
+    pass #file gets deleted from server, db is updated
 
 if __name__ == "__main__":
     if not os.path.exists(db):
@@ -72,9 +140,9 @@ if __name__ == "__main__":
     if not os.path.exists(lg):
         init_lg() #checkpoint 3 problem
 
- app.run(port=5000, debug=False)
+app.run(port=5000, debug=False)
 # EVERYTHING AFTER THIS POINT IS OLD
-
+"""
 # salting
 SaltSize = 32
 
@@ -474,3 +542,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""
