@@ -3,12 +3,14 @@
 import os
 import getpass
 import logging
-from flask import Flask, request, session, redirect, url_for, render_template
+from flask import Flask, request, session, redirect, url_for, render_template, send_file
 from functools import wraps
 import bcrypt
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import io
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, padding
 
 # directories, locally simulates having some server structure
 MainDir = os.path.dirname(os.path.abspath(__file__)) #secure directory used
@@ -22,6 +24,46 @@ minpwL = 8
 maxusrnL = 20
 minusrnL = 5
 
+#crypto stuff
+SaltSize = 32
+def password2key(password, salt):
+    key = PBKDF2HMAC(algorithm=hashes.SHA256(), salt=salt, length=32, iterations=9999)
+    return key.derive(password)
+
+def encrypt(file, password):
+
+    key = b'\x00'
+    salt = os.urandom(SaltSize)
+    iv = os.urandom(16)
+
+    key = password2key(password, salt)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    encryptor = cipher.encryptor()
+
+    padder= padding.PKCS7(16*8).padder()
+    padded = padder.update(file) + padder.finalize()
+
+    ciphered = encryptor.update(padded) + encryptor.finalize()
+    return salt + iv + ciphered
+
+
+def decrypt(ciphered, password): #input = encrypted file .  output = decrypted file
+
+    salt = ciphered[:SaltSize]
+    iv = ciphered[SaltSize:(SaltSize + 16)]
+    ciphertext = ciphered[SaltSize + 16:]
+
+    key = password2key(password, salt)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+    padded = decryptor.update(ciphered) + decryptor.finalize()
+
+    unpadder = padding.PKCS7(16*8).unpadder()
+    file = unpadder.update(padded) + unpadder.finalize()
+    return file
+
+#INITIALIZATION OF SERVER, DB, AND LOGS
+
 def init_db():
     pass
 
@@ -31,14 +73,21 @@ def init_fs():
 def init_lg():
     pass
 
+#ACTUAL WEBSITE
+
 app = Flask(__name__)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or os.urandom(32)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024 * 1024 #maximum file size 16GB
 
 def login_required(view):
-    @wraps(check)
+    @wraps(view)
     def logincheck(*args, **kwargs):
         if  False: #"user not logged in" condition to be implemented
             return redirect(url_for('loginPage'))
-        return check(*args, **kwargs)
+        return view(*args, **kwargs)
     return logincheck
 
 @app.route("/", methods=["GET"])
@@ -56,14 +105,13 @@ def register():  #registration flow, check if input is good, does user already e
     usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
     pw = request.form.get("password", "")
     pwconf = request.form.get("confirm password", "")
-    if (minusrnL < len(usrn) or len(usrn) > maxusrnL) or not usrn.isalnum():
+    if minusrnL > len(usrn) or len(usrn) < maxusrnL or not usrn.isalnum():
         return render_template("register.html", error="Invalid username"), 400
     if len(pw) < minpwL or len(pw) > maxpwL:
         return render_template("register.html", error="Invalid password"), 400
     if pw != pwconf:
         return render_template("register.html", error="Passwords do not match"), 400
-    PasswordBytes = bytearray(pw.encode('utf-8')) #encodes the password as bytes
-    hashedPassword = bcrypt.hashpw(bytes(PasswordBytes), bcrypt.gensalt(rounds=12))    
+    hashedPassword = bcrypt.hashpw(pw, bcrypt.gensalt(rounds=12))    
     #to do: add user to db with hashed pw
 
 # LOGIN and LOGOUT
@@ -110,17 +158,31 @@ def userPage():
 @app.route("/files", methods=["POST"])
 @login_required
 def upload():
-    pass #opens window for file upload, file and user get checked, file name appears and "uploading" is shown while the file gets uploaded and encrypted, at end of upload db is updated
-#note: need a hard limit on filesize, filename length, files per user
-#once finished assign id and have path <file_id>
+    file = request.files.get("file")
+    hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
+    #add checks for upload, absent file, unsafe file name, user has too many files etc (hard limit on filesize, filename length, files per user)
+    #some ui update that uploading is in progress after checks
+    cipher = encrypt(file.read(), hash)
+    path =  os.path.join("blabla") #files will be organized by user eventually
+    with open(path, "wb") as f:
+        f.write(cipher) #there will be try except cases here, it simulates a configured server, but I wanna avoid OS issues
+    #after upload is complete, add file to db and assign a file id
 
 #DOWNLOAD
 
 @app.route("/files/<file_id>", methods=["GET"])
 @login_required
-def download():
-    pass #check usr can actually download this, that file exists etc, then initiate decrypt and download
+def download(file_id):
+    if False: #does file belong to user??? Is file a valid file???
+    hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
+    path =  os.path.join("blabla") #files will be organized by user eventually
+    with open(path, "rb") as f:
+        cipher = f.read()
+    file = decrypt(cipher, hash)
+    return send_file(io.BytesIO(file), as_attachment=True, download_name=file_id)
 
+#check usr can actually download this, that file exists etc, then initiate decrypt and download
+io
 #DELETE
 
 @app.route("/files/<file_id>/delete", methods=["GET"])
@@ -140,7 +202,7 @@ if __name__ == "__main__":
     if not os.path.exists(lg):
         init_lg() #checkpoint 3 problem
 
-app.run(port=5000, debug=False)
+    app.run(port=5000, debug=False)
 # EVERYTHING AFTER THIS POINT IS OLD
 """
 # salting
