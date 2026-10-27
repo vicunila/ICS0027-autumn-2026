@@ -13,6 +13,10 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes, padding
 
+#TODO checkpoint 2: html pages, tls, delete dead code, rename project
+#TODO checkpoint 3: session timeout, logging, gitignore, getting pw from db for encryption and decryption, delete, pw change, user blocking, input sanitazation, change CBC to GCM
+
+
 # directories, locally simulates having some server structure
 MainDir = os.path.dirname(os.path.abspath(__file__)) #secure directory used
 db = os.path.join(MainDir, "databases", "main.db") #database
@@ -48,7 +52,7 @@ def encrypt(file, password):
     return salt + iv + ciphered
 
 
-def decrypt(ciphered, password): #input = encrypted file .  output = decrypted file
+def decrypt(ciphered, password): 
 
     salt = ciphered[:SaltSize]
     iv = ciphered[SaltSize:(SaltSize + 16)]
@@ -69,14 +73,20 @@ def init_db():
     os.makedirs(os.path.dirname(db), exist_ok=True)
     con = sqlite3.connect(db)
     con.execute("""CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-            pwhash BLOB NOT NULL)""")
+        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        pwhash BLOB NOT NULL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS files (
+        file_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(user_id),
+        filename TEXT NOT NULL,
+        date_added TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_download TEXT)""")
     con.commit()
     con.close()
 
 def init_fs():
-    pass
+    os.makedirs(fs, exist_ok=True)
 
 def init_lg():
     pass
@@ -109,7 +119,7 @@ def registerPage():
     return render_template("register.html") #registration page username and pw form + confirm password
 
 @app.route("/register", methods=["POST"])
-def register():  #registration flow, check if input is good, does user already exist?, if yes add user to db and redirect to login page
+def register(): 
     usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
     pw = request.form.get("password", "")
     pwconf = request.form.get("confirm password", "")
@@ -137,8 +147,7 @@ def loginPage():
     return render_template("login.html") #login page, username and pw form
 
 @app.route("/login", methods=["POST"])
-def login(): #login action, 1: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change.
-    #2: check login, input given, correct usr and pw, show error if necessary, if works start session and redirect to personal page 
+def login(): #to implement: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change
     usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
     pw = request.form.get("password", "")
     con = sqlite3.connect(db)
@@ -180,29 +189,33 @@ def userPage():
 @login_required
 def upload():
     file = request.files.get("file")
+    con = sqlite3.connect(db)
     hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
     #add checks for upload, absent file, unsafe file name, user has too many files etc (hard limit on filesize, filename length, files per user)
     #some ui update that uploading is in progress after checks
     cipher = encrypt(file.read(), hash)
-    path =  os.path.join("blabla") #files will be organized by user eventually
-    with open(path, "wb") as f:
-        f.write(cipher) #there will be try except cases here, it simulates a configured server, but I wanna avoid OS issues
-    #after upload is complete, add file to db and assign a file id
-
+    try:
+        nsrt = con.execute("INSERT INTO files (user_id, filename) VALUES (?, ?)", (session["user_id"], file.filename))
+        file_id = nsrt.lastrowid
+        with open(os.path.join(fs, str(file_id)), "wb") as f:
+            f.write(cipher) #there will be try except cases here, it simulates a configured server, but I wanna avoid OS issues when uploading files, so an error needs to be handled
+        con.commit()
+    finally:
+        con.close()
+    return redirect(url_for("userPage"))
 #DOWNLOAD
 
 @app.route("/files/<file_id>", methods=["GET"])
 @login_required
 def download(file_id):
-    if False: #does file belong to user??? Is file a valid file???
-        hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
-    path =  os.path.join("blabla") #files will be organized by user eventually
+    if False: 
+        pass #does file belong to user??? Is file a valid file??? does file exist???
+    hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
+    path =  os.path.join(fs, str(file_id))
     with open(path, "rb") as f:
         cipher = f.read()
     file = decrypt(cipher, hash)
     return send_file(io.BytesIO(file), as_attachment=True, download_name=file_id)
-
-#check usr can actually download this, that file exists etc, then initiate decrypt and download
 
 #DELETE
 
