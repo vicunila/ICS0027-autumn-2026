@@ -3,6 +3,7 @@
 import os
 import getpass
 import logging
+import sqlite3
 from flask import Flask, request, session, redirect, url_for, render_template, send_file
 from functools import wraps
 import bcrypt
@@ -65,7 +66,14 @@ def decrypt(ciphered, password): #input = encrypted file .  output = decrypted f
 #INITIALIZATION OF SERVER, DB, AND LOGS
 
 def init_db():
-    pass
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            pwhash BLOB NOT NULL)""")
+    con.commit()
+    con.close()
 
 def init_fs():
     pass
@@ -85,7 +93,7 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024 * 1024 #maximum file size 16
 def login_required(view):
     @wraps(view)
     def logincheck(*args, **kwargs):
-        if  False: #"user not logged in" condition to be implemented
+        if  "user_id" not in session:
             return redirect(url_for('loginPage'))
         return view(*args, **kwargs)
     return logincheck
@@ -98,21 +106,29 @@ def welcomePage():
 
 @app.route("/register", methods=["GET"])
 def registerPage():
-    return render_template("registration.html") #registration page username and pw form + confirm password
+    return render_template("register.html") #registration page username and pw form + confirm password
 
 @app.route("/register", methods=["POST"])
 def register():  #registration flow, check if input is good, does user already exist?, if yes add user to db and redirect to login page
     usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
     pw = request.form.get("password", "")
     pwconf = request.form.get("confirm password", "")
-    if minusrnL > len(usrn) or len(usrn) < maxusrnL or not usrn.isalnum():
+    if len(usrn) < minusrnL or len(usrn) > maxusrnL or not usrn.isalnum():
         return render_template("register.html", error="Invalid username"), 400
     if len(pw) < minpwL or len(pw) > maxpwL:
         return render_template("register.html", error="Invalid password"), 400
     if pw != pwconf:
         return render_template("register.html", error="Passwords do not match"), 400
-    hashedPassword = bcrypt.hashpw(pw, bcrypt.gensalt(rounds=12))    
-    #to do: add user to db with hashed pw
+    hashedPassword = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)) 
+    con = sqlite3.connect(db)
+    try:
+        con.execute("INSERT INTO users (username, pwhash) VALUES (?, ?)",(usrn, hashedPassword),)
+        con.commit()
+    except sqlite3.IntegrityError:
+        return render_template("register.html", error="Username already exists"), 400
+    finally:
+        con.close()
+    return redirect(url_for("loginPage"))
 
 # LOGIN and LOGOUT
 
@@ -125,11 +141,16 @@ def login(): #login action, 1: check if user needs to change pw (had pw for over
     #2: check login, input given, correct usr and pw, show error if necessary, if works start session and redirect to personal page 
     usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
     pw = request.form.get("password", "")
-    if True: #add a check for db,increase counter for blocked user
-        user = (usrn, "hashed_password", 1)
-        session["user_id"] = 1 # 1 is a user id placeholder number
-        return redirect(url_for("userPage"))
-    return render_template("login.html", error="Invalid username or password"), 400    
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    check = con.execute("SELECT user_id, pwhash FROM users WHERE username = ?",(usrn,)).fetchone()
+    if (check is None or not bcrypt.checkpw(pw.encode("utf-8"), check["pwhash"])):
+        con.close()
+        return render_template("login.html", error="Invalid username or password."), 400
+    user_id = check["user_id"]
+    con.close()
+    session["user_id"] = user_id
+    return redirect(url_for("userPage"))    
 
 @app.route("/logout", methods=["POST"])
 @login_required
@@ -174,7 +195,7 @@ def upload():
 @login_required
 def download(file_id):
     if False: #does file belong to user??? Is file a valid file???
-    hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
+        hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
     path =  os.path.join("blabla") #files will be organized by user eventually
     with open(path, "rb") as f:
         cipher = f.read()
@@ -182,7 +203,7 @@ def download(file_id):
     return send_file(io.BytesIO(file), as_attachment=True, download_name=file_id)
 
 #check usr can actually download this, that file exists etc, then initiate decrypt and download
-io
+
 #DELETE
 
 @app.route("/files/<file_id>/delete", methods=["GET"])
