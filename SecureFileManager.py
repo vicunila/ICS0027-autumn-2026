@@ -13,8 +13,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes, padding
 
-#TODO checkpoint 2: html pages, tls, delete dead code, rename project
-#TODO checkpoint 3: session timeout, logging, gitignore, getting pw from db for encryption and decryption, delete, pw change, user blocking, input sanitazation, change CBC to GCM
+#TODO checkpoint 3 and final: session timeout, logging, gitignore, getting pw from db for encryption and decryption, delete, pw change, user blocking, input sanitazation, change CBC to GCM, tls with mkcert, randomized user and file ids
 
 
 # directories, locally simulates having some server structure
@@ -195,7 +194,7 @@ def userPage():
 def upload():
     file = request.files.get("file")
     con = sqlite3.connect(db)
-    hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
+    hash = bcrypt.hashpw(b"password123") # will be replaced with hash from db
     #add checks for upload, absent file, unsafe file name, user has too many files etc (hard limit on filesize, filename length, files per user)
     #some ui update that uploading is in progress after checks
     cipher = encrypt(file.read(), hash)
@@ -215,7 +214,7 @@ def upload():
 def download(file_id):
     if False: 
         pass #does file belong to user??? Is file a valid file??? does file exist???
-    hash = bcrypt.hashpw("password123", bcrypt.gensalt(rounds=12)) # will be replaced with hash from db
+    hash = bcrypt.hashpw(b"password123") # will be replaced with hash from db
     path =  os.path.join(fs, str(file_id))
     with open(path, "rb") as f:
         cipher = f.read()
@@ -244,4 +243,4 @@ if __name__ == "__main__":
     if not os.path.exists(lg):
         init_lg() #checkpoint 3 problem
 
-    app.run(port=5000, debug=False)
+    app.run(port=5000, debug=False, ssl_context="adhoc")
