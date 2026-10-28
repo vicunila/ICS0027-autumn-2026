@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Register</title>
+<h1>Register</h1>
+<p>{{ error }}</p>
+<form id="form" method="post" action="{{ url_for('register') }}">
+  Username <input name="username"><br>
+  Password <input type="password" name="password"><br>
+  Confirm password <input type="password" name="confirm password"><br>
+</form>
+<a href="#" onclick="document.getElementById('form').submit(); return false;">Register</a>

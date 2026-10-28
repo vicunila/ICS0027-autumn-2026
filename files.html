@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Your files</title>
+<h1>Your files</h1>
+
+<form id="upload" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+  <input type="file" name="file">
+</form>
+<a href="#" onclick="document.getElementById('upload').submit(); return false;">Upload</a>
+
+<ul>
+{% for f in files %}
+  <li>{{ f['filename'] }} ({{ f['date_added'] }}) <a href="{{ url_for('download', file_id=f['file_id']) }}">download</a></li>
+{% endfor %}
+</ul>
+
+<form id="logout" method="post" action="{{ url_for('logout') }}"></form>
+<a href="#" onclick="document.getElementById('logout').submit(); return false;">Log out</a>
