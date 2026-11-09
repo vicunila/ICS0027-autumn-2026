@@ -127,6 +127,12 @@ def check_csrf():
     if not expected or not hmac.compare_digest(sent, expected):
         abort(400)
 
+@app.after_request
+def set_headers(response):
+    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
 @app.route("/", methods=["GET"])
 def welcomePage():
     return render_template("mainpage.html") #tell the user what this whole project is, two links -> sign in or register
