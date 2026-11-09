@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes, padding
 
-#TODO checkpoint 3 and final: session timeout, logging, gitignore, getting pw from db for encryption and decryption, delete, pw change, user blocking, input sanitazation, change CBC to GCM, tls with mkcert, randomized user and file ids
+#TODO checkpoint 3 and final: session timeout, logging, gitignore, pw change, user blocking, input sanitazation in auth, change CBC to GCM, tls with mkcert, randomized user and file ids
 
 
 # directories, locally simulates having some server structure
@@ -215,7 +215,7 @@ def pwchange():
 
 #UPLOAD
 
-@app.route("/files", methods=["GET"]) #this GET is harder because it needs to show files PERSONALIZED to user
+@app.route("/files", methods=["GET"])
 @login_required
 def userPage():
     con = sqlite3.connect(db)
@@ -242,15 +242,15 @@ def upload():
         return "File is empty", 400
     if len(data) > maxsize:
         return "File too large", 400
-    con = sqlite3.connect(db)
     hash = usrkeys[session["user_id"]]
-    cipher = encrypt(file.read(), hash)
+    cipher = encrypt(data, hash)
+    con = sqlite3.connect(db)
     path = None
     try:
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
             return "File limit reached", 400
-        nsrt = con.execute("INSERT INTO files (user_id, filename) VALUES (?, ?)", (session["user_id"], file.filename))
+        nsrt = con.execute("INSERT INTO files (user_id, filename, date_added) VALUES (?, ?, CURRENT_TIMESTAMP)", (session["user_id"], filename))
         file_id = nsrt.lastrowid
         path = os.path.join(fs, str(file_id))
         with open(os.path.join(fs, str(file_id)), "wb") as f:
@@ -269,30 +269,39 @@ def upload():
 @login_required
 def download(file_id):
     con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
     try:
         row = con.execute("SELECT filename FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"])).fetchone()
+        if row is None:
+            return "File not found", 400
+        hash = usrkeys[session["user_id"]]
+        path =  os.path.join(fs, str(file_id))
+        with open(path, "rb") as f:
+            cipher = f.read()
+        file = decrypt(cipher, hash)
+        con.execute("UPDATE files SET last_download = CURRENT_TIMESTAMP WHERE file_id = ?", (file_id,))
+        con.commit()
     finally:
-        con.close()
-    if row is None:
-        return "File not found", 400
-    hash = usrkeys[session["user_id"]]
-    path =  os.path.join(fs, str(file_id))
-    with open(path, "rb") as f:
-        cipher = f.read()
-    file = decrypt(cipher, hash)
-    # TO DO: update last download in db
-    return send_file(io.BytesIO(file), as_attachment=True, download_name=file_id)
+            con.close()
+    return send_file(io.BytesIO(file), as_attachment=True, download_name=row["filename"])
 
 #DELETE
 
-@app.route("/files/<file_id>/delete", methods=["GET"])
+@app.route("/files/<file_id>/delete", methods=["POST"])
 @login_required
-def deletePage():
-    pass #are you sure you wanna delete this???? text appears somehow
-@app.route("/files/<file_id>/delete", methods=["DELETE"])
-@login_required
-def delete():
-    pass #file gets deleted from server, db is updated
+def delete(file_id):
+    con = sqlite3.connect(db)
+    try:
+        row2dlt = con.execute("DELETE FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"]))
+        if row2dlt.rowcount == 0:
+            return "File not found", 400
+        con.commit()
+    finally:
+        con.close()
+    path = os.path.join(fs, str(file_id))
+    if os.path.exists(path):
+        os.remove(path)
+    return redirect(url_for("userPage"))
 
 #Main
 

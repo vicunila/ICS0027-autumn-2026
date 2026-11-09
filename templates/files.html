@@ -11,7 +11,15 @@
 
 <ul>
 {% for f in files %}
-  <li>{{ f['filename'] }} ({{ f['date_added'] }}) <a href="{{ url_for('download', file_id=f['file_id']) }}">download</a></li>
+  <li>{{ f['filename'] }} ({{ f['date_added'] }})
+    <form method="get" action="{{ url_for('download', file_id=f['file_id']) }}">
+      <button type="submit">Download</button>
+    </form>
+    <form method="post" action="{{ url_for('delete', file_id=f['file_id']) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit">Delete</button>
+    </form>
+  </li>
 {% endfor %}
 </ul>
 
