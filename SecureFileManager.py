@@ -10,6 +10,7 @@ import bcrypt
 import io
 import secrets
 import hmac
+from werkzeug.utils import secure_filename
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -29,6 +30,12 @@ maxpwL = 20
 minpwL = 8
 maxusrnL = 20
 minusrnL = 5
+
+#upload limits
+maxnameL = 100
+maxfiles = 1000
+maxsize = 16 * 1024 * 1024 * 1024 #16GB
+allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #I will add more
 
 #crypto stuff
 SaltSize = 32
@@ -219,12 +226,27 @@ def userPage():
 @login_required
 def upload():
     file = request.files.get("file")
+    if file is None or file.filename == "":
+        return "No file selected", 400
+    filename = secure_filename(file.filename)
+    if not filename or len(filename) > maxnameL:
+        return "Invalid file name", 400
+    if "." not in filename or filename.rsplit(".", 1)[1].lower() not in allowedExt:
+        return "File type not allowed", 400
+    data = file.read()
+    if len(data) == 0:
+        return "File is empty", 400
+    if len(data) > maxsize:
+        return "File too large", 400
     con = sqlite3.connect(db)
     hash = bcrypt.hashpw(b"password123") # will be replaced with hash from db
     #add checks for upload, absent file, unsafe file name, user has too many files etc (hard limit on filesize, filename length, files per user)
     #some ui update that uploading is in progress after checks
     cipher = encrypt(file.read(), hash)
     try:
+        count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
+        if count >= maxfiles:
+            return "File limit reached", 400
         nsrt = con.execute("INSERT INTO files (user_id, filename) VALUES (?, ?)", (session["user_id"], file.filename))
         file_id = nsrt.lastrowid
         with open(os.path.join(fs, str(file_id)), "wb") as f:
@@ -238,8 +260,13 @@ def upload():
 @app.route("/files/<file_id>", methods=["GET"])
 @login_required
 def download(file_id):
-    if False: 
-        pass #does file belong to user??? Is file a valid file??? does file exist???
+    con = sqlite3.connect(db)
+    try:
+        row = con.execute("SELECT filename FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"])).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        return "File not found", 400
     hash = bcrypt.hashpw(b"password123") # will be replaced with hash from db
     path =  os.path.join(fs, str(file_id))
     with open(path, "rb") as f:
