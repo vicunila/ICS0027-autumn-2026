@@ -4,7 +4,9 @@
 <h1>Sign in</h1>
 <p>{{ error }}</p>
 <form id="form" method="post" action="{{ url_for('login') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   Username <input name="username"><br>
   Password <input type="password" name="password"><br>
+  <button type="submit">Sign in</button>
 </form>
-<a href="#" onclick="document.getElementById('form').submit(); return false;">Sign in</a>
+<a href="{{ url_for('registerPage') }}">Don't have an account? Register</a>

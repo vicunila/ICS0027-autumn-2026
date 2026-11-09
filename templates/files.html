@@ -4,9 +4,10 @@
 <h1>Your files</h1>
 
 <form id="upload" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="file" name="file">
+  <button type="submit">Upload</button>
 </form>
-<a href="#" onclick="document.getElementById('upload').submit(); return false;">Upload</a>
 
 <ul>
 {% for f in files %}
@@ -14,5 +15,7 @@
 {% endfor %}
 </ul>
 
-<form id="logout" method="post" action="{{ url_for('logout') }}"></form>
-<a href="#" onclick="document.getElementById('logout').submit(); return false;">Log out</a>
+<form id="logout" method="post" action="{{ url_for('logout') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit">Log out</button>
+</form>

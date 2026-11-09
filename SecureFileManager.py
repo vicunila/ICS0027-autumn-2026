@@ -115,7 +115,7 @@ def get_csrf():
     return session["csrf_token"]
 
 @app.context_processor
-def add_csrf_token():
+def add_csrf():
     return {"csrf_token": get_csrf}
 
 @app.before_request
