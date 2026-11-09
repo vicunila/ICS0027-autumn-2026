@@ -108,10 +108,11 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024 * 1024 #maximum file size 16GB
 
+usrkeys = {}
 def login_required(view):
     @wraps(view)
     def logincheck(*args, **kwargs):
-        if  "user_id" not in session:
+        if  "user_id" not in session or session["user_id"] not in usrkeys:
             return redirect(url_for('loginPage'))
         return view(*args, **kwargs)
     return logincheck
@@ -191,11 +192,13 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     user_id = check["user_id"]
     con.close()
     session["user_id"] = user_id
+    usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
     return redirect(url_for("userPage"))    
 
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout():
+    usrkeys.pop(session["user_id"], None)
     session.clear()
     return redirect(url_for("welcomePage"))
 
@@ -222,14 +225,15 @@ def userPage():
     finally:
         con.close()
     return render_template("files.html", files=filelist)
+
 @app.route("/files", methods=["POST"])
 @login_required
 def upload():
     file = request.files.get("file")
-    if file is None or file.filename == "":
+    if file is None or file.filename == "" or file.filename == None:
         return "No file selected", 400
     filename = secure_filename(file.filename)
-    if not filename or len(filename) > maxnameL:
+    if not filename or len(filename) > maxnameL or len(filename) < 2:
         return "Invalid file name", 400
     if "." not in filename or filename.rsplit(".", 1)[1].lower() not in allowedExt:
         return "File type not allowed", 400
@@ -239,19 +243,23 @@ def upload():
     if len(data) > maxsize:
         return "File too large", 400
     con = sqlite3.connect(db)
-    hash = bcrypt.hashpw(b"password123") # will be replaced with hash from db
-    #add checks for upload, absent file, unsafe file name, user has too many files etc (hard limit on filesize, filename length, files per user)
-    #some ui update that uploading is in progress after checks
+    hash = usrkeys[session["user_id"]]
     cipher = encrypt(file.read(), hash)
+    path = None
     try:
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
             return "File limit reached", 400
         nsrt = con.execute("INSERT INTO files (user_id, filename) VALUES (?, ?)", (session["user_id"], file.filename))
         file_id = nsrt.lastrowid
+        path = os.path.join(fs, str(file_id))
         with open(os.path.join(fs, str(file_id)), "wb") as f:
             f.write(cipher) #there will be try except cases here, it simulates a configured server, but I wanna avoid OS issues when uploading files, so an error needs to be handled
         con.commit()
+    except Exception:
+        if path and os.path.exists(path):
+            os.remove(path) #files to be removed in case of an error while uploading
+        raise
     finally:
         con.close()
     return redirect(url_for("userPage"))
@@ -267,7 +275,7 @@ def download(file_id):
         con.close()
     if row is None:
         return "File not found", 400
-    hash = bcrypt.hashpw(b"password123") # will be replaced with hash from db
+    hash = usrkeys[session["user_id"]]
     path =  os.path.join(fs, str(file_id))
     with open(path, "rb") as f:
         cipher = f.read()
