@@ -4,10 +4,12 @@ import os
 import getpass
 import logging
 import sqlite3
-from flask import Flask, request, session, redirect, url_for, render_template, send_file
+from flask import Flask, request, session, redirect, url_for, render_template, send_file, abort
 from functools import wraps
 import bcrypt
 import io
+import secrets
+import hmac
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -106,6 +108,24 @@ def login_required(view):
             return redirect(url_for('loginPage'))
         return view(*args, **kwargs)
     return logincheck
+
+def get_csrf():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    return session["csrf_token"]
+
+@app.context_processor
+def add_csrf_token():
+    return {"csrf_token": get_csrf}
+
+@app.before_request
+def check_csrf():
+    if request.method != "POST":
+        return
+    sent = request.form.get("csrf_token", "")
+    expected = session.get("csrf_token", "")
+    if not expected or not hmac.compare_digest(sent, expected):
+        abort(400)
 
 @app.route("/", methods=["GET"])
 def welcomePage():
