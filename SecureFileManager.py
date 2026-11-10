@@ -10,6 +10,7 @@ import bcrypt
 import io
 import secrets
 import hmac
+import re
 from werkzeug.utils import secure_filename
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -31,6 +32,8 @@ maxpwL = 20
 minpwL = 8
 maxusrnL = 20
 minusrnL = 5
+AllowedCharsusrn = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
 
 #upload limits
 maxnameL = 100
@@ -141,15 +144,19 @@ def registerPage():
 
 @app.route("/register", methods=["POST"])
 def register(): 
-    usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
+    usrn = request.form.get("username", "")
     pw = request.form.get("password", "")
     pwconf = request.form.get("confirm password", "")
-    if len(usrn) < minusrnL or len(usrn) > maxusrnL or not usrn.isalnum():
+
+    if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in pw):
         return render_template("register.html", error="Invalid username"), 400
-    if len(pw) < minpwL or len(pw) > maxpwL:
+    if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
+        return render_template("register.html", error="Invalid password"), 400
+    if not (re.search(r"[a-z]", pw) and re.search(r"[A-Z]", pw) and re.search(r"[0-9]", pw) and re.search(r"[!@#$%^&*]", pw)):
         return render_template("register.html", error="Invalid password"), 400
     if pw != pwconf:
         return render_template("register.html", error="Passwords do not match"), 400
+    
     hashedPassword = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)) 
     con = sqlite3.connect(db)
     try:
@@ -169,8 +176,12 @@ def loginPage():
 
 @app.route("/login", methods=["POST"])
 def login(): #to implement: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change
-    usrn = request.form.get("username", "") #TO BE IMPLEMENTED: input sanitazation, will be done in checkpoint 3
+    usrn = request.form.get("username", "")
     pw = request.form.get("password", "")
+    if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in pw):
+            return render_template("login.html", error="Invalid username"), 400
+    if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
+            return render_template("login.html", error="Invalid password"), 400
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     check = con.execute("SELECT user_id, pwhash FROM users WHERE username = ?",(usrn,)).fetchone()
@@ -179,6 +190,7 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
         return render_template("login.html", error="Invalid username or password."), 400
     user_id = check["user_id"]
     con.close()
+    session.clear()
     session["user_id"] = user_id
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
     return redirect(url_for("userPage"))    
