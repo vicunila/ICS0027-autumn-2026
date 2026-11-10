@@ -14,12 +14,12 @@ import time
 from datetime import timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO before final handout: logging, gitignore, pw change, user blocking, tls with mkcert, randomized user and file ids
+#TODO before final handout: logging, gitignore, pw change, user blocking, tls with mkcert, multisession blocking
 
 
 # directories, locally simulates having some server structure
@@ -38,6 +38,8 @@ AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
 IdleTimeout = 30 * 60 #30min
 AuthTimeout = 10 * 60 #10min
 AbsoluteTimeout = 10 * 60 * 60 #10hrs
+AllowedCharsid = "0123456789abcdef"
+IdLength = 32
 
 #upload limits
 maxnameL = 100
@@ -47,9 +49,9 @@ allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #I will add more
 
 #crypto stuff
 SaltSize = 32
-it = 999999
+itrtns = 999999
 def password2key(password, salt):
-    key = PBKDF2HMAC(algorithm=hashes.SHA256(), salt=salt, length=32, iterations=it)
+    key = PBKDF2HMAC(algorithm=hashes.SHA256(), salt=salt, length=32, iterations=itrtns)
     return key.derive(password)
 
 def encrypt(file, password):
@@ -77,17 +79,34 @@ def init_db():
     os.makedirs(os.path.dirname(db), exist_ok=True)
     con = sqlite3.connect(db)
     con.execute("""CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT PRIMARY KEY NOT NULL,
         username TEXT NOT NULL UNIQUE COLLATE NOCASE,
         pwhash BLOB NOT NULL)""")
     con.execute("""CREATE TABLE IF NOT EXISTS files (
-        file_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL REFERENCES users(user_id),
+        file_id TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(user_id),
         filename TEXT NOT NULL,
         date_added TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         last_download TEXT)""")
     con.commit()
     con.close()
+
+def new_user_id(con):
+    for _ in range(3):
+        uid = secrets.token_hex(IdLength // 2)
+        if con.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,)).fetchone() is None:
+            return uid
+    raise RuntimeError("Could not generate a unique user id")
+
+def new_file_id(con):
+    for _ in range(3):
+        fid = secrets.token_hex(IdLength // 2)
+        if con.execute("SELECT 1 FROM files WHERE file_id = ?", (fid,)).fetchone() is None:
+            return fid
+    raise RuntimeError("Could not generate a unique file id")
+
+def valid_id(value):
+    return len(value) == IdLength and all(c in AllowedCharsid for c in value)
 
 def init_fs():
     os.makedirs(fs, exist_ok=True)
@@ -195,7 +214,8 @@ def register():
     hashedPassword = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)) 
     con = sqlite3.connect(db)
     try:
-        con.execute("INSERT INTO users (username, pwhash) VALUES (?, ?)",(usrn, hashedPassword),)
+        user_id = new_user_id(con)
+        con.execute("INSERT INTO users (user_id, username, pwhash) VALUES (?, ?, ?)", (user_id, usrn, hashedPassword))
         con.commit()
     except sqlite3.IntegrityError:
         return render_template("register.html", error="Username already exists"), 409
@@ -233,7 +253,6 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     session.clear()
     session["user_id"] = user_id
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
-    app.permanent_session_lifetime = timedelta(seconds=AbsoluteTimeout)
     session["created"] = time.time()
     session["last_seen"] = time.time()
     return redirect(url_for("userPage"))    
@@ -293,9 +312,9 @@ def upload():
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
             return userPage("File limit reached"), 409
-        nsrt = con.execute("INSERT INTO files (user_id, filename, date_added) VALUES (?, ?, CURRENT_TIMESTAMP)", (session["user_id"], filename))
-        file_id = nsrt.lastrowid
-        path = os.path.join(fs, str(file_id))
+        file_id = new_file_id(con)
+        con.execute("INSERT INTO files (file_id, user_id, filename) VALUES (?, ?, ?)", (file_id, session["user_id"], filename))
+        path = os.path.join(fs, file_id)
         try:
             with open(path, "wb") as f:
                 f.write(cipher)
@@ -313,9 +332,11 @@ def upload():
     return redirect(url_for("userPage"))
 #DOWNLOAD
 
-@app.route("/files/<int:file_id>", methods=["GET"])
+@app.route("/files/<file_id>", methods=["GET"])
 @login_required
 def download(file_id):
+    if not valid_id(file_id):
+        return userPage("File not found"), 404
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     try:
@@ -341,9 +362,11 @@ def download(file_id):
 
 #DELETE
 
-@app.route("/files/<int:file_id>/delete", methods=["POST"])
+@app.route("/files/<file_id>/delete", methods=["POST"])
 @login_required
 def delete(file_id):
+    if not valid_id(file_id):
+            return userPage("File not found"), 404
     con = sqlite3.connect(db)
     try:
         row2dlt = con.execute("DELETE FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"]))
