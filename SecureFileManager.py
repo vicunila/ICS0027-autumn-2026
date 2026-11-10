@@ -3,13 +3,15 @@
 import os
 import logging
 import sqlite3
-from flask import Flask, request, session, redirect, url_for, render_template, send_file, abort
+from flask import Flask, request, session, redirect, url_for, render_template, send_file
 from functools import wraps
 import bcrypt
 import io
 import secrets
 import hmac
 import re
+import time
+from datetime import timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
@@ -17,7 +19,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO checkpoint 3 and final: session timeout, logging, gitignore, pw change, user blocking, tls with mkcert, randomized user and file ids
+#TODO before final handout: logging, gitignore, pw change, user blocking, tls with mkcert, randomized user and file ids
 
 
 # directories, locally simulates having some server structure
@@ -33,6 +35,9 @@ maxusrnL = 20
 minusrnL = 5
 AllowedCharsusrn = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+IdleTimeout = 30 * 60 #30min
+AuthTimeout = 10 * 60 #10min
+AbsoluteTimeout = 10 * 60 * 60 #10hrs
 
 #upload limits
 maxnameL = 100
@@ -42,8 +47,9 @@ allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #I will add more
 
 #crypto stuff
 SaltSize = 32
+it = 999999
 def password2key(password, salt):
-    key = PBKDF2HMAC(algorithm=hashes.SHA256(), salt=salt, length=32, iterations=9999)
+    key = PBKDF2HMAC(algorithm=hashes.SHA256(), salt=salt, length=32, iterations=it)
     return key.derive(password)
 
 def encrypt(file, password):
@@ -107,6 +113,20 @@ def login_required(view):
         return view(*args, **kwargs)
     return logincheck
 
+@app.before_request
+def check_timeout():
+    now = time.time()
+    if "last_seen" in session:
+        if "user_id" in session:
+            expired = now - session["last_seen"] > IdleTimeout or now - session.get("created", 0) > AbsoluteTimeout
+        else:
+            expired = now - session["last_seen"] > AuthTimeout
+        if expired:
+            usrkeys.pop(session.get("user_id"), None)
+            session.clear()
+            return redirect(url_for("loginPage"))
+    session["last_seen"] = now
+
 def get_csrf():
     if "csrf_token" not in session:
         session["csrf_token"] = secrets.token_urlsafe(32)
@@ -120,10 +140,12 @@ def add_csrf():
 def check_csrf():
     if request.method != "POST":
         return
-    sent = request.form.get("csrf_token", "")
-    expected = session.get("csrf_token", "")
+    sent = request.form.get("csrf_token", "").encode()
+    expected = session.get("csrf_token", "").encode()
     if not expected or not hmac.compare_digest(sent, expected):
-        abort(403)
+        usrkeys.pop(session.get("user_id"), None)
+        session.clear()
+        return redirect(url_for("loginPage"))
 
 @app.after_request
 def set_headers(response):
@@ -131,14 +153,19 @@ def set_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
-@app.errorhandler(HTTPException)
-def httpError(e):
-    return render_template("error.html", code=e.code, message=e.description), e.code
-
 @app.errorhandler(Exception)
 def serverError(e):
-    return render_template("error.html", code=500, message="Server error"), 500
-
+    code = e.code if isinstance(e, HTTPException) else 500
+    if request.endpoint == "register":
+        return render_template("register.html", error="Something went wrong"), code
+    if request.endpoint in ("upload", "download", "delete", "userPage"):
+        return userPage("Something went wrong"), code
+    if request.endpoint in ("login", "pwchange"):
+        usrkeys.pop(session.get("user_id"), None)
+        session.clear()
+        return render_template("login.html", error="Something went wrong"), code
+    else:
+        return render_template("mainpage.html", error="Something went wrong"), code
 
 @app.route("/", methods=["GET"])
 def welcomePage():
@@ -202,10 +229,13 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     con.close()
 
     if "user_id" in session:
-        usrkeys.pop(session["user_id"], None)
+        usrkeys.pop(session.get("user_id"), None)
     session.clear()
     session["user_id"] = user_id
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
+    app.permanent_session_lifetime = timedelta(seconds=AbsoluteTimeout)
+    session["created"] = time.time()
+    session["last_seen"] = time.time()
     return redirect(url_for("userPage"))    
 
 @app.route("/logout", methods=["POST"])
@@ -230,31 +260,31 @@ def pwchange():
 
 @app.route("/files", methods=["GET"])
 @login_required
-def userPage():
+def userPage(error=""):
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     try:
         filelist = con.execute("SELECT file_id, filename, date_added, last_download FROM files WHERE user_id = ? ORDER BY date_added DESC", (session["user_id"],)).fetchall()
     finally:
         con.close()
-    return render_template("files.html", files=filelist)
+    return render_template("files.html", files=filelist, error=error)
 
 @app.route("/files", methods=["POST"])
 @login_required
 def upload():
     file = request.files.get("file")
     if file is None or file.filename == "" or file.filename == None:
-        abort(400, description="No file selected")
+        return userPage("No file selected"), 400
     filename = secure_filename(file.filename)
     if not filename or len(filename) > maxnameL or len(filename) < 2:
-        abort(400, description="Invalid file name")
+        return userPage("Invalid file name"), 400
     if "." not in filename or filename.rsplit(".", 1)[1].lower() not in allowedExt:
-        abort(415, description="File type not allowed")
+        return userPage("File type not allowed"), 415
     data = file.read()
     if len(data) == 0:
-        abort(400, description="File is empty")
+        return userPage("File is empty"), 400
     if len(data) > maxsize:
-        abort(413, description="File too large")
+        return userPage("File too large"), 413
     hash = usrkeys[session["user_id"]]
     cipher = encrypt(data, hash)
     con = sqlite3.connect(db)
@@ -262,7 +292,7 @@ def upload():
     try:
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
-            abort(409, description="File limit reached")
+            return userPage("File limit reached"), 409
         nsrt = con.execute("INSERT INTO files (user_id, filename, date_added) VALUES (?, ?, CURRENT_TIMESTAMP)", (session["user_id"], filename))
         file_id = nsrt.lastrowid
         path = os.path.join(fs, str(file_id))
@@ -272,7 +302,7 @@ def upload():
         except OSError:
             if path and os.path.exists(path):
                 os.remove(path)
-            abort(500, description="Server error")
+            return userPage("Server error"), 500
         con.commit()
     except Exception:
         if path and os.path.exists(path):
@@ -291,18 +321,18 @@ def download(file_id):
     try:
         row = con.execute("SELECT filename FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"])).fetchone()
         if row is None:
-            abort(404, description="File not found")
+            return userPage("File not found"), 404
         hash = usrkeys[session["user_id"]]
         path =  os.path.join(fs, str(file_id))
         try:
             with open(path, "rb") as f:
                 cipher = f.read()
         except FileNotFoundError:
-            abort(404, description="File not found")
+            return userPage("File not found"), 404
         try:
             file = decrypt(cipher, hash)
         except InvalidTag:
-            abort(500, description="File could not be decrypted")
+            return userPage("File could not be decrypted"), 500
         con.execute("UPDATE files SET last_download = CURRENT_TIMESTAMP WHERE file_id = ?", (file_id,))
         con.commit()
     finally:
@@ -318,7 +348,7 @@ def delete(file_id):
     try:
         row2dlt = con.execute("DELETE FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"]))
         if row2dlt.rowcount == 0:
-            abort(404, description="File not found")
+            return userPage("File not found"), 404
         con.commit()
     finally:
         con.close()
