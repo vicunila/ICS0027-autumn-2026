@@ -2,6 +2,7 @@
 <meta charset="utf-8">
 <title>Your files</title>
 <h1>Your files</h1>
+<p>{{ error }}</p>
 
 <form id="upload" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

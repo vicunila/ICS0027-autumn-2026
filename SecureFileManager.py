@@ -1,7 +1,6 @@
 #Made by Victor Laino
 #student number 251773iCVM
 import os
-import getpass
 import logging
 import sqlite3
 from flask import Flask, request, session, redirect, url_for, render_template, send_file, abort
@@ -12,13 +11,13 @@ import secrets
 import hmac
 import re
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC for now because I had implemented it in the past. will switch to GCM in checkpoint 3
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO checkpoint 3 and final: session timeout, logging, gitignore, pw change, user blocking, input sanitazation in auth, tls with mkcert, randomized user and file ids
+#TODO checkpoint 3 and final: session timeout, logging, gitignore, pw change, user blocking, tls with mkcert, randomized user and file ids
 
 
 # directories, locally simulates having some server structure
@@ -124,13 +123,22 @@ def check_csrf():
     sent = request.form.get("csrf_token", "")
     expected = session.get("csrf_token", "")
     if not expected or not hmac.compare_digest(sent, expected):
-        abort(400)
+        abort(403)
 
 @app.after_request
 def set_headers(response):
     response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+@app.errorhandler(HTTPException)
+def httpError(e):
+    return render_template("error.html", code=e.code, message=e.description), e.code
+
+@app.errorhandler(Exception)
+def serverError(e):
+    return render_template("error.html", code=500, message="Server error"), 500
+
 
 @app.route("/", methods=["GET"])
 def welcomePage():
@@ -148,7 +156,7 @@ def register():
     pw = request.form.get("password", "")
     pwconf = request.form.get("confirm password", "")
 
-    if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in pw):
+    if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
         return render_template("register.html", error="Invalid username"), 400
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
         return render_template("register.html", error="Invalid password"), 400
@@ -163,7 +171,7 @@ def register():
         con.execute("INSERT INTO users (username, pwhash) VALUES (?, ?)",(usrn, hashedPassword),)
         con.commit()
     except sqlite3.IntegrityError:
-        return render_template("register.html", error="Username already exists"), 400
+        return render_template("register.html", error="Username already exists"), 409
     finally:
         con.close()
     return redirect(url_for("loginPage"))
@@ -176,20 +184,25 @@ def loginPage():
 
 @app.route("/login", methods=["POST"])
 def login(): #to implement: check if user needs to change pw (had pw for over 4 months) if yes redirect to password change
+
     usrn = request.form.get("username", "")
     pw = request.form.get("password", "")
-    if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in pw):
-            return render_template("login.html", error="Invalid username"), 400
+    if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
+            return render_template("login.html", error="Invalid username or password"), 401
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
-            return render_template("login.html", error="Invalid password"), 400
+            return render_template("login.html", error="Invalid username or password"), 401
+    
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     check = con.execute("SELECT user_id, pwhash FROM users WHERE username = ?",(usrn,)).fetchone()
     if (check is None or not bcrypt.checkpw(pw.encode("utf-8"), check["pwhash"])):
         con.close()
-        return render_template("login.html", error="Invalid username or password."), 400
+        return render_template("login.html", error="Invalid username or password"), 401
     user_id = check["user_id"]
     con.close()
+
+    if "user_id" in session:
+        usrkeys.pop(session["user_id"], None)
     session.clear()
     session["user_id"] = user_id
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
@@ -231,17 +244,17 @@ def userPage():
 def upload():
     file = request.files.get("file")
     if file is None or file.filename == "" or file.filename == None:
-        return "No file selected", 400
+        abort(400, description="No file selected")
     filename = secure_filename(file.filename)
     if not filename or len(filename) > maxnameL or len(filename) < 2:
-        return "Invalid file name", 400
+        abort(400, description="Invalid file name")
     if "." not in filename or filename.rsplit(".", 1)[1].lower() not in allowedExt:
-        return "File type not allowed", 400
+        abort(415, description="File type not allowed")
     data = file.read()
     if len(data) == 0:
-        return "File is empty", 400
+        abort(400, description="File is empty")
     if len(data) > maxsize:
-        return "File too large", 400
+        abort(413, description="File too large")
     hash = usrkeys[session["user_id"]]
     cipher = encrypt(data, hash)
     con = sqlite3.connect(db)
@@ -249,12 +262,17 @@ def upload():
     try:
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
-            return "File limit reached", 400
+            abort(409, description="File limit reached")
         nsrt = con.execute("INSERT INTO files (user_id, filename, date_added) VALUES (?, ?, CURRENT_TIMESTAMP)", (session["user_id"], filename))
         file_id = nsrt.lastrowid
         path = os.path.join(fs, str(file_id))
-        with open(os.path.join(fs, str(file_id)), "wb") as f:
-            f.write(cipher) #there will be try except cases here, it simulates a configured server, but I wanna avoid OS issues when uploading files, so an error needs to be handled
+        try:
+            with open(path, "wb") as f:
+                f.write(cipher)
+        except OSError:
+            if path and os.path.exists(path):
+                os.remove(path)
+            abort(500, description="Server error")
         con.commit()
     except Exception:
         if path and os.path.exists(path):
@@ -273,15 +291,18 @@ def download(file_id):
     try:
         row = con.execute("SELECT filename FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"])).fetchone()
         if row is None:
-            return "File not found", 400
+            abort(404, description="File not found")
         hash = usrkeys[session["user_id"]]
         path =  os.path.join(fs, str(file_id))
-        with open(path, "rb") as f:
-            cipher = f.read()
+        try:
+            with open(path, "rb") as f:
+                cipher = f.read()
+        except FileNotFoundError:
+            abort(404, description="File not found")
         try:
             file = decrypt(cipher, hash)
         except InvalidTag:
-            return "File could not be decrypted", 500
+            abort(500, description="File could not be decrypted")
         con.execute("UPDATE files SET last_download = CURRENT_TIMESTAMP WHERE file_id = ?", (file_id,))
         con.commit()
     finally:
@@ -297,7 +318,7 @@ def delete(file_id):
     try:
         row2dlt = con.execute("DELETE FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"]))
         if row2dlt.rowcount == 0:
-            return "File not found", 400
+            abort(404, description="File not found")
         con.commit()
     finally:
         con.close()
