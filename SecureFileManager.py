@@ -15,8 +15,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM #I will use CBC f
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes, padding
+from cryptography.exceptions import InvalidTag
 
-#TODO checkpoint 3 and final: session timeout, logging, gitignore, pw change, user blocking, input sanitazation in auth, change CBC to GCM, tls with mkcert, randomized user and file ids
+#TODO checkpoint 3 and final: session timeout, logging, gitignore, pw change, user blocking, input sanitazation in auth, tls with mkcert, randomized user and file ids
 
 
 # directories, locally simulates having some server structure
@@ -47,32 +48,19 @@ def encrypt(file, password):
 
     key = b'\x00'
     salt = os.urandom(SaltSize)
-    iv = os.urandom(16)
-
+    nonce = os.urandom(12)
     key = password2key(password, salt)
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-    encryptor = cipher.encryptor()
-
-    padder= padding.PKCS7(16*8).padder()
-    padded = padder.update(file) + padder.finalize()
-
-    ciphered = encryptor.update(padded) + encryptor.finalize()
-    return salt + iv + ciphered
+    ciphered = AESGCM(key).encrypt(nonce, file, None)
+    return salt + nonce + ciphered
 
 
 def decrypt(ciphered, password): 
 
     salt = ciphered[:SaltSize]
-    iv = ciphered[SaltSize:(SaltSize + 16)]
-    ciphertext = ciphered[SaltSize + 16:]
-
+    nonce = ciphered[SaltSize:SaltSize + 12]
+    ciphertext = ciphered[SaltSize + 12:]
     key = password2key(password, salt)
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-    decryptor = cipher.decryptor()
-    padded = decryptor.update(ciphered) + decryptor.finalize()
-
-    unpadder = padding.PKCS7(16*8).unpadder()
-    file = unpadder.update(padded) + unpadder.finalize()
+    file = AESGCM(key).decrypt(nonce, ciphertext, None)
     return file
 
 #INITIALIZATION OF SERVER, DB, AND LOGS
@@ -265,7 +253,7 @@ def upload():
     return redirect(url_for("userPage"))
 #DOWNLOAD
 
-@app.route("/files/<file_id>", methods=["GET"])
+@app.route("/files/<int:file_id>", methods=["GET"])
 @login_required
 def download(file_id):
     con = sqlite3.connect(db)
@@ -278,7 +266,10 @@ def download(file_id):
         path =  os.path.join(fs, str(file_id))
         with open(path, "rb") as f:
             cipher = f.read()
-        file = decrypt(cipher, hash)
+        try:
+            file = decrypt(cipher, hash)
+        except InvalidTag:
+            return "File could not be decrypted", 500
         con.execute("UPDATE files SET last_download = CURRENT_TIMESTAMP WHERE file_id = ?", (file_id,))
         con.commit()
     finally:
@@ -287,7 +278,7 @@ def download(file_id):
 
 #DELETE
 
-@app.route("/files/<file_id>/delete", methods=["POST"])
+@app.route("/files/<int:file_id>/delete", methods=["POST"])
 @login_required
 def delete(file_id):
     con = sqlite3.connect(db)
