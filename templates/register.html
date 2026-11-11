@@ -6,7 +6,9 @@
 <form id="form" method="post" action="{{ url_for('register') }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   Username <input name="username"><br>
+    <small>Username must be 5 to 20 characters long, and alphanumeric</small><br>
   Password <input type="password" name="password"><br>
+    <small>Password must be 8 to 20 characters long, with upper and lower case, a digit, and a special character</small><br>
   Confirm password <input type="password" name="confirm password"><br>
   <button type="submit">Register</button>
 </form>

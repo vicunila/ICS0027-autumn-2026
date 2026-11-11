@@ -11,7 +11,6 @@ import secrets
 import hmac
 import re
 import time
-from datetime import timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -19,7 +18,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO before final handout: logging, gitignore, pw change, user blocking, tls with mkcert, multisession blocking
+#TODO before final handout: gitignore, pw change, user blocking, tls with mkcert, multisession blocking
 
 
 # directories, locally simulates having some server structure
@@ -111,8 +110,19 @@ def valid_id(value):
 def init_fs():
     os.makedirs(fs, exist_ok=True)
 
+logger = logging.getLogger("SecureFileManager")
 def init_lg():
-    pass
+    if logger.handlers:
+        return
+    logger.setLevel(logging.INFO)
+    fileHandling = logging.FileHandler(lg, mode='a')
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fileHandling.setFormatter(formatter)
+    logger.addHandler(fileHandling)
+    logger.info("Logger initialized.")
+
+def cleanusername(value):
+    return "".join(c if c in AllowedCharsusrn else "?" for c in str(value)[:maxusrnL+10])
 
 #ACTUAL WEBSITE
 
@@ -128,6 +138,7 @@ def login_required(view):
     @wraps(view)
     def logincheck(*args, **kwargs):
         if  "user_id" not in session or session["user_id"] not in usrkeys:
+            logger.debug(f"user={cleanusername(session.get("username","?"))} event=unauthenticated access")
             return redirect(url_for('loginPage'))
         return view(*args, **kwargs)
     return logincheck
@@ -141,6 +152,7 @@ def check_timeout():
         else:
             expired = now - session["last_seen"] > AuthTimeout
         if expired:
+            logger.info(f"user={cleanusername(session.get("username","?"))} event=session expired")
             usrkeys.pop(session.get("user_id"), None)
             session.clear()
             return redirect(url_for("loginPage"))
@@ -162,6 +174,7 @@ def check_csrf():
     sent = request.form.get("csrf_token", "").encode()
     expected = session.get("csrf_token", "").encode()
     if not expected or not hmac.compare_digest(sent, expected):
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=csfr failed")
         usrkeys.pop(session.get("user_id"), None)
         session.clear()
         return redirect(url_for("loginPage"))
@@ -176,14 +189,18 @@ def set_headers(response):
 def serverError(e):
     code = e.code if isinstance(e, HTTPException) else 500
     if request.endpoint == "register":
+        logger.error( f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
         return render_template("register.html", error="Something went wrong"), code
     if request.endpoint in ("upload", "download", "delete", "userPage"):
+        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
         return userPage("Something went wrong"), code
     if request.endpoint in ("login", "pwchange"):
+        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
         usrkeys.pop(session.get("user_id"), None)
         session.clear()
         return render_template("login.html", error="Something went wrong"), code
     else:
+        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
         return render_template("mainpage.html", error="Something went wrong"), code
 
 @app.route("/", methods=["GET"])
@@ -203,12 +220,16 @@ def register():
     pwconf = request.form.get("confirm password", "")
 
     if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
+        logger.info(f"user={cleanusername(usrn)} event=invalid username")
         return render_template("register.html", error="Invalid username"), 400
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
+        logger.info(f"user={cleanusername(usrn)} event=invalid password size")
         return render_template("register.html", error="Invalid password"), 400
     if not (re.search(r"[a-z]", pw) and re.search(r"[A-Z]", pw) and re.search(r"[0-9]", pw) and re.search(r"[!@#$%^&*]", pw)):
+        logger.info(f"user={cleanusername(usrn)} event=weak password")
         return render_template("register.html", error="Invalid password"), 400
     if pw != pwconf:
+        logger.info(f"user={cleanusername(usrn)} event=passwords didn't match")
         return render_template("register.html", error="Passwords do not match"), 400
     
     hashedPassword = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)) 
@@ -217,7 +238,9 @@ def register():
         user_id = new_user_id(con)
         con.execute("INSERT INTO users (user_id, username, pwhash) VALUES (?, ?, ?)", (user_id, usrn, hashedPassword))
         con.commit()
+        logger.info(f"user={cleanusername(usrn)} event=user successfully created")
     except sqlite3.IntegrityError:
+        logger.info(f"user={cleanusername(usrn)} event=username exists already")
         return render_template("register.html", error="Username already exists"), 409
     finally:
         con.close()
@@ -235,8 +258,10 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     usrn = request.form.get("username", "")
     pw = request.form.get("password", "")
     if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
+            logger.warning(f"user={cleanusername(usrn)} event=Invalid username format")
             return render_template("login.html", error="Invalid username or password"), 401
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
+            logger.warning(f"user={cleanusername(usrn)} event=invalid password format")
             return render_template("login.html", error="Invalid username or password"), 401
     
     con = sqlite3.connect(db)
@@ -244,8 +269,10 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     check = con.execute("SELECT user_id, pwhash FROM users WHERE username = ?",(usrn,)).fetchone()
     if (check is None or not bcrypt.checkpw(pw.encode("utf-8"), check["pwhash"])):
         con.close()
+        logger.warning(f"user={cleanusername(usrn)} event=incorrect credentials")
         return render_template("login.html", error="Invalid username or password"), 401
     user_id = check["user_id"]
+    username = check["username"]
     con.close()
 
     if "user_id" in session:
@@ -255,11 +282,14 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
     session["created"] = time.time()
     session["last_seen"] = time.time()
+    session["username"] = username
+    logger.info(f"user={cleanusername(usrn)} event=user logged in")
     return redirect(url_for("userPage"))    
 
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout():
+    logger.info(f"user={cleanusername(session.get("username", "?"))} event=user logged out")
     usrkeys.pop(session["user_id"], None)
     session.clear()
     return redirect(url_for("welcomePage"))
@@ -269,11 +299,14 @@ def logout():
 @app.route("/password_update", methods=["GET"])
 @login_required
 def pwchangePage():
+    logger.error(f"user={cleanusername(session.get("username", "?"))} event=user somehow got in password change")
     return render_template("pwchange.html") #when user decides OR is forced to change password, asks for usrname, old pw, new pw, new pw confirmation
 @app.route("/password_update", methods=["POST"])
 @login_required
 def pwchange():
-    pass #mix of login and registration checks will be necessary
+    usrkeys.pop(session["user_id"], None)
+    session.clear()
+    return redirect(url_for("welcomePage")) #temporary code, if triggered they will just log out user
 
 #UPLOAD
 
@@ -293,16 +326,21 @@ def userPage(error=""):
 def upload():
     file = request.files.get("file")
     if file is None or file.filename == "" or file.filename == None:
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=empty file uploaded")
         return userPage("No file selected"), 400
     filename = secure_filename(file.filename)
     if not filename or len(filename) > maxnameL or len(filename) < 2:
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file name with invalid length")
         return userPage("Invalid file name"), 400
     if "." not in filename or filename.rsplit(".", 1)[1].lower() not in allowedExt:
+        logger.warning(f"user={cleanusername(session.get("username","?"))} event=unallowed file extension")
         return userPage("File type not allowed"), 415
     data = file.read()
     if len(data) == 0:
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=empty file")
         return userPage("File is empty"), 400
     if len(data) > maxsize:
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file is too big")
         return userPage("File too large"), 413
     hash = usrkeys[session["user_id"]]
     cipher = encrypt(data, hash)
@@ -311,6 +349,7 @@ def upload():
     try:
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
+            logger.info(f"user={cleanusername(session.get("username","?"))} event=file limit reached for user")
             return userPage("File limit reached"), 409
         file_id = new_file_id(con)
         con.execute("INSERT INTO files (file_id, user_id, filename) VALUES (?, ?, ?)", (file_id, session["user_id"], filename))
@@ -321,12 +360,15 @@ def upload():
         except OSError:
             if path and os.path.exists(path):
                 os.remove(path)
+            logger.error(f"user={cleanusername(session.get("username","?"))} event=server error during upload. OS related. deleting file")
             return userPage("Server error"), 500
         con.commit()
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file uploaded successfully")
     except Exception:
         if path and os.path.exists(path):
             os.remove(path) #files to be removed in case of an error while uploading
-        raise
+        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error during upload. deleting file")
+        return userPage("Server error"), 500
     finally:
         con.close()
     return redirect(url_for("userPage"))
@@ -336,12 +378,14 @@ def upload():
 @login_required
 def download(file_id):
     if not valid_id(file_id):
+        logger.warning(f"user={cleanusername(session.get("username","?"))} event=invalid file id format")
         return userPage("File not found"), 404
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     try:
         row = con.execute("SELECT filename FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"])).fetchone()
         if row is None:
+            logger.warning(f"user={cleanusername(session.get("username","?"))} event=file id doesn't exist or doesn't belong to user")
             return userPage("File not found"), 404
         hash = usrkeys[session["user_id"]]
         path =  os.path.join(fs, str(file_id))
@@ -349,13 +393,16 @@ def download(file_id):
             with open(path, "rb") as f:
                 cipher = f.read()
         except FileNotFoundError:
+            logger.error(f"user={cleanusername(session.get("username","?"))} event=file not found in server")
             return userPage("File not found"), 404
         try:
             file = decrypt(cipher, hash)
-        except InvalidTag:
+        except(InvalidTag, ValueError):
+            logger.error(f"user={cleanusername(session.get("username","?"))} event=file can't be decrypted")
             return userPage("File could not be decrypted"), 500
         con.execute("UPDATE files SET last_download = CURRENT_TIMESTAMP WHERE file_id = ?", (file_id,))
         con.commit()
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file downloaded successfully")
     finally:
             con.close()
     return send_file(io.BytesIO(file), as_attachment=True, download_name=row["filename"])
@@ -366,28 +413,34 @@ def download(file_id):
 @login_required
 def delete(file_id):
     if not valid_id(file_id):
+            logger.warning(f"user={cleanusername(session.get("username","?"))} event=invalid file id format")
             return userPage("File not found"), 404
     con = sqlite3.connect(db)
     try:
         row2dlt = con.execute("DELETE FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"]))
         if row2dlt.rowcount == 0:
+            logger.warning(f"user={cleanusername(session.get("username","?"))} event=file id doesn't exist or doesn't belong to user")
             return userPage("File not found"), 404
         con.commit()
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file deleted correctly from db")
     finally:
         con.close()
     path = os.path.join(fs, str(file_id))
     if os.path.exists(path):
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file deleted correctly on server")
         os.remove(path)
     return redirect(url_for("userPage"))
 
 #Main
 
 if __name__ == "__main__":
+
+    init_lg()
     if not os.path.exists(db):
-        init_db() #running app for the first time may end up 
+        logger.warning(f"db does not exist. a new db is created")
+        init_db()
     if not os.path.exists(fs):
-        init_fs() #maybe not even needed, it just has to be a folder
-    if not os.path.exists(lg):
-        init_lg() #checkpoint 3 problem
+        logger.warning(f"server does not exist. a new server is created")
+        init_fs()
 
     app.run(port=5000, debug=False, ssl_context="adhoc")
