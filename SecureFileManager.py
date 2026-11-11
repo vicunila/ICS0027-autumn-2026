@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO before final handout: gitignore, pw change, user blocking, tls with mkcert, multisession blocking
+#TODO before final handout: gitignore, pw change, user blocking, tls with mkcert, multisession blocking, secure deletion (not just os.remove), ip address in logs
 
 
 # directories, locally simulates having some server structure
@@ -131,7 +131,7 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or os.urandom(32)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024 * 1024 #maximum file size 16GB
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024 #maximum file size 50MB
 
 usrkeys = {}
 def login_required(view):
