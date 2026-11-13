@@ -43,7 +43,7 @@ IdLength = 32
 #upload limits
 maxnameL = 100
 maxfiles = 1000
-maxsize = 16 * 1024 * 1024 * 1024 #16GB
+maxsize = 50 * 1024 * 1024 #50MB
 allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #I will add more
 
 #crypto stuff
