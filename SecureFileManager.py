@@ -272,7 +272,6 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
         logger.warning(f"user={cleanusername(usrn)} event=incorrect credentials")
         return render_template("login.html", error="Invalid username or password"), 401
     user_id = check["user_id"]
-    username = check["username"]
     con.close()
 
     if "user_id" in session:
@@ -282,7 +281,7 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
     session["created"] = time.time()
     session["last_seen"] = time.time()
-    session["username"] = username
+    session["username"] = cleanusername(usrn)
     logger.info(f"user={cleanusername(usrn)} event=user logged in")
     return redirect(url_for("userPage"))    
 
