@@ -2,6 +2,7 @@
 #student number 251773ICVM
 import os
 import logging
+import logging.handlers
 import sqlite3
 from flask import Flask, request, session, redirect, url_for, render_template, send_file
 from functools import wraps
@@ -18,7 +19,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO before final handout: gitignore, pw change, multisession blocking, secure deletion (not just os.remove)
+#TODO before final handout: pw change
 
 
 # directories, locally simulates having some server structure
@@ -37,6 +38,8 @@ AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
 IdleTimeout = 30 * 60 #30min
 AuthTimeout = 10 * 60 #10min
 AbsoluteTimeout = 10 * 60 * 60 #10hrs
+
+#IDs' variables
 AllowedCharsid = "0123456789abcdef" #needed for userIds or fileIds: HEX only
 IdLength = 32
 
@@ -45,6 +48,9 @@ maxnameL = 100 #max 100 chars in filename
 maxfiles = 1000 #max 1000 files per user
 maxsize = 50 * 1024 * 1024 #50MB max upload size, forced by flask
 allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #allowed extensions
+
+#deletion variables
+ChunkSize = 1000000
 
 #user block limits
 loginMaxFails = 5 #failed logins allowed from one ip
@@ -84,13 +90,13 @@ def init_lg():
     if logger.handlers: #if logger already exist, do nothing
         return
     logger.setLevel(logging.INFO)
-    fileHandling = logging.FileHandler(lg, mode='a', maxBytes= 5 * 1024 * 1024)
+    fileHandling = logging.handlers.RotatingFileHandler(lg, mode='a', maxBytes= 5 * 1024 * 1024)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     fileHandling.setFormatter(formatter)
     logger.addHandler(fileHandling)
     logger.info("logger_initialized")
 
-def cleanusername(value):
+def cleanusername(value): #log helper for safe writing
     return "".join(c if c in AllowedCharsusrn else "?" for c in str(value)[:maxusrnL+20])
 
 def init_db():
@@ -114,7 +120,7 @@ def init_db():
     con.commit()
     con.close()
 
-def new_user_id(con):
+def new_user_id(con): #creates a randomized userId
     for _ in range(3): #if, very unluckily, the userId/fileId happens to already exist, it tries again, up to 3 times
         uid = secrets.token_hex(IdLength // 2)
         if con.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,)).fetchone() is None:
@@ -130,7 +136,7 @@ def new_file_id(con):
     logger.error(f"ip={request.remote_addr} could_not_generate_unique_fileid")
     raise RuntimeError("Could not generate a unique file id")
 
-def valid_id(value):
+def valid_id(value): #helper to check that the id is of the valid type
     return len(value) == IdLength and all(c in AllowedCharsid for c in value)
 
 def init_fs():
@@ -146,10 +152,11 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024 #maximum file size 50MB
 
 usrkeys = {}
+activeSession = {}
 def login_required(view):
     @wraps(view)
     def logincheck(*args, **kwargs):
-        if  "user_id" not in session or session["user_id"] not in usrkeys:
+        if  "user_id" not in session or session["user_id"] not in usrkeys or session.get("sessionid") is None or activeSession.get(session["user_id"]) != session["sessionid"]:
             logger.info(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=unauthenticated_access")
             return redirect(url_for('loginPage'))
         return view(*args, **kwargs)
@@ -305,6 +312,13 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
         usrkeys.pop(session.get("user_id"), None)
     session.clear()
     session["user_id"] = user_id
+
+    if user_id in activeSession:
+        logger.info(f"user={cleanusername(usrn)} ip={request.remote_addr} event=session_replaced")
+
+    sessionid = secrets.token_hex(16)
+    activeSession[user_id] = sessionid
+    session["sessionid"] = sessionid
     usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
     session["created"] = time.time()
     session["last_seen"] = time.time()
@@ -317,6 +331,7 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
 def logout():
     logger.info(f"user={cleanusername(session.get("username", "?"))} event=user_logged_out")
     usrkeys.pop(session["user_id"], None)
+    activeSession.pop(session["user_id"], None)
     session.clear()
     return redirect(url_for("welcomePage"))
 
@@ -451,10 +466,24 @@ def delete(file_id):
         logger.info(f"user={cleanusername(session.get("username","?"))} event=file_deleted_correctly_from_db")
     finally:
         con.close()
-    path = os.path.join(fs, str(file_id))
-    if os.path.exists(path):
-        os.remove(path)
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file_deleted_correctly_on_server")
+    file = os.path.join(fs, str(file_id))
+    if os.path.exists(file):
+        try:
+            size = os.path.getsize(file)
+            with open(file, "r+b") as f:
+                writtenbytes = 0
+                while writtenbytes < size:
+                    chunk = min(ChunkSize, size - writtenbytes)
+                    f.write(b'\x00' * chunk)
+                    written += chunk
+                f.flush()
+                os.fsync(f.fileno())
+            os.remove(file)
+            logger.info(f"user={cleanusername(session.get("username","?"))} event=file_deleted_correctly_on_server")
+        except OSError:
+            os.remove(file) #still attempt to at least delete normally
+            logger.error(f"user={cleanusername(session.get('username','?'))} ip={request.remote_addr} event=server_error_delete reason=os_error", exc_info=True)
+            return userPage("Server error"), 500
     return redirect(url_for("userPage"))
 
 #Main
