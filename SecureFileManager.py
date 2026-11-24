@@ -1,5 +1,5 @@
 #Made by Victor Laino
-#student number 251773iCVM
+#student number 251773ICVM
 import os
 import logging
 import sqlite3
@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO before final handout: gitignore, pw change, user blocking, tls with mkcert, multisession blocking, secure deletion (not just os.remove), ip address in logs
+#TODO before final handout: gitignore, pw change, multisession blocking, secure deletion (not just os.remove)
 
 
 # directories, locally simulates having some server structure
@@ -28,25 +28,30 @@ fs = os.path.join(MainDir, "files_storage") #file storage server object
 lg = os.path.join(MainDir, "logging.log") #logging
 
 #logging in variables
-maxpwL = 20
-minpwL = 8
-maxusrnL = 20
-minusrnL = 5
-AllowedCharsusrn = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+maxpwL = 20 #max password length
+minpwL = 8 #min password length
+maxusrnL = 20 #max username length
+minusrnL = 5 #min username length
+AllowedCharsusrn = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" #only alphanumerics in the username
+AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*" #only alphanumerics and special chars in pw
 IdleTimeout = 30 * 60 #30min
 AuthTimeout = 10 * 60 #10min
 AbsoluteTimeout = 10 * 60 * 60 #10hrs
-AllowedCharsid = "0123456789abcdef"
+AllowedCharsid = "0123456789abcdef" #needed for userIds or fileIds: HEX only
 IdLength = 32
 
 #upload limits
-maxnameL = 100
-maxfiles = 1000
-maxsize = 50 * 1024 * 1024 #50MB
-allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #I will add more
+maxnameL = 100 #max 100 chars in filename
+maxfiles = 1000 #max 1000 files per user
+maxsize = 50 * 1024 * 1024 #50MB max upload size, forced by flask
+allowedExt = {"txt", "pdf", "png", "jpg", "gif", "docx"} #allowed extensions
 
-#crypto stuff
+#user block limits
+loginMaxFails = 5 #failed logins allowed from one ip
+loginWindow = 30 #30 min window for ip limit to reset (changed to 30s for testing)
+ipBlockTime = 1 * 60 #1 hr ip block time (changed to 1 min for testing)
+
+#cryptography
 SaltSize = 32
 itrtns = 999999
 def password2key(password, salt):
@@ -74,6 +79,20 @@ def decrypt(ciphered, password):
 
 #INITIALIZATION OF SERVER, DB, AND LOGS
 
+logger = logging.getLogger("SecureFileManager")
+def init_lg():
+    if logger.handlers: #if logger already exist, do nothing
+        return
+    logger.setLevel(logging.INFO)
+    fileHandling = logging.FileHandler(lg, mode='a', maxBytes= 5 * 1024 * 1024)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fileHandling.setFormatter(formatter)
+    logger.addHandler(fileHandling)
+    logger.info("logger_initialized")
+
+def cleanusername(value):
+    return "".join(c if c in AllowedCharsusrn else "?" for c in str(value)[:maxusrnL+20])
+
 def init_db():
     os.makedirs(os.path.dirname(db), exist_ok=True)
     con = sqlite3.connect(db)
@@ -87,14 +106,20 @@ def init_db():
         filename TEXT NOT NULL,
         date_added TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         last_download TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS login_blocks (
+        ip TEXT PRIMARY KEY NOT NULL,
+        failures INTEGER NOT NULL DEFAULT 0,
+        window_start REAL NOT NULL,
+        blocked_until REAL NOT NULL DEFAULT 0)""")
     con.commit()
     con.close()
 
 def new_user_id(con):
-    for _ in range(3):
+    for _ in range(3): #if, very unluckily, the userId/fileId happens to already exist, it tries again, up to 3 times
         uid = secrets.token_hex(IdLength // 2)
         if con.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,)).fetchone() is None:
             return uid
+    logger.error(f"ip={request.remote_addr} could_not_generate_unique_userid")
     raise RuntimeError("Could not generate a unique user id")
 
 def new_file_id(con):
@@ -102,6 +127,7 @@ def new_file_id(con):
         fid = secrets.token_hex(IdLength // 2)
         if con.execute("SELECT 1 FROM files WHERE file_id = ?", (fid,)).fetchone() is None:
             return fid
+    logger.error(f"ip={request.remote_addr} could_not_generate_unique_fileid")
     raise RuntimeError("Could not generate a unique file id")
 
 def valid_id(value):
@@ -109,20 +135,6 @@ def valid_id(value):
 
 def init_fs():
     os.makedirs(fs, exist_ok=True)
-
-logger = logging.getLogger("SecureFileManager")
-def init_lg():
-    if logger.handlers:
-        return
-    logger.setLevel(logging.INFO)
-    fileHandling = logging.FileHandler(lg, mode='a')
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    fileHandling.setFormatter(formatter)
-    logger.addHandler(fileHandling)
-    logger.info("Logger initialized.")
-
-def cleanusername(value):
-    return "".join(c if c in AllowedCharsusrn else "?" for c in str(value)[:maxusrnL+10])
 
 #ACTUAL WEBSITE
 
@@ -138,7 +150,7 @@ def login_required(view):
     @wraps(view)
     def logincheck(*args, **kwargs):
         if  "user_id" not in session or session["user_id"] not in usrkeys:
-            logger.debug(f"user={cleanusername(session.get("username","?"))} event=unauthenticated access")
+            logger.info(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=unauthenticated_access")
             return redirect(url_for('loginPage'))
         return view(*args, **kwargs)
     return logincheck
@@ -152,7 +164,7 @@ def check_timeout():
         else:
             expired = now - session["last_seen"] > AuthTimeout
         if expired:
-            logger.info(f"user={cleanusername(session.get("username","?"))} event=session expired")
+            logger.info(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=session_expired")
             usrkeys.pop(session.get("user_id"), None)
             session.clear()
             return redirect(url_for("loginPage"))
@@ -174,7 +186,7 @@ def check_csrf():
     sent = request.form.get("csrf_token", "").encode()
     expected = session.get("csrf_token", "").encode()
     if not expected or not hmac.compare_digest(sent, expected):
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=csfr failed")
+        logger.warning(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=csrf_failed")
         usrkeys.pop(session.get("user_id"), None)
         session.clear()
         return redirect(url_for("loginPage"))
@@ -189,18 +201,18 @@ def set_headers(response):
 def serverError(e):
     code = e.code if isinstance(e, HTTPException) else 500
     if request.endpoint == "register":
-        logger.error( f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
+        logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=server_error endpoint={request.endpoint} status={code}", exc_info=True)
         return render_template("register.html", error="Something went wrong"), code
     if request.endpoint in ("upload", "download", "delete", "userPage"):
-        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
+        logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=server_error endpoint={request.endpoint} status={code}", exc_info=True) 
         return userPage("Something went wrong"), code
     if request.endpoint in ("login", "pwchange"):
-        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
+        logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=server_error endpoint={request.endpoint} status={code}", exc_info=True)
         usrkeys.pop(session.get("user_id"), None)
         session.clear()
         return render_template("login.html", error="Something went wrong"), code
     else:
-        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error endpoint={request.endpoint} status={code}")
+        logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=server_error endpoint={request.endpoint} status={code}", exc_info=True)
         return render_template("mainpage.html", error="Something went wrong"), code
 
 @app.route("/", methods=["GET"])
@@ -220,16 +232,16 @@ def register():
     pwconf = request.form.get("confirm password", "")
 
     if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
-        logger.info(f"user={cleanusername(usrn)} event=invalid username")
+        logger.info(f"user={cleanusername(usrn)} event=invalid_username")
         return render_template("register.html", error="Invalid username"), 400
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
-        logger.info(f"user={cleanusername(usrn)} event=invalid password size")
+        logger.info(f"user={cleanusername(usrn)} event=invalid_password_size")
         return render_template("register.html", error="Invalid password"), 400
     if not (re.search(r"[a-z]", pw) and re.search(r"[A-Z]", pw) and re.search(r"[0-9]", pw) and re.search(r"[!@#$%^&*]", pw)):
-        logger.info(f"user={cleanusername(usrn)} event=weak password")
+        logger.info(f"user={cleanusername(usrn)} event=weak_password")
         return render_template("register.html", error="Invalid password"), 400
     if pw != pwconf:
-        logger.info(f"user={cleanusername(usrn)} event=passwords didn't match")
+        logger.info(f"user={cleanusername(usrn)} event=passwords_dont_match")
         return render_template("register.html", error="Passwords do not match"), 400
     
     hashedPassword = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)) 
@@ -238,9 +250,9 @@ def register():
         user_id = new_user_id(con)
         con.execute("INSERT INTO users (user_id, username, pwhash) VALUES (?, ?, ?)", (user_id, usrn, hashedPassword))
         con.commit()
-        logger.info(f"user={cleanusername(usrn)} event=user successfully created")
+        logger.info(f"user={cleanusername(usrn)} event=user_successfully_created")
     except sqlite3.IntegrityError:
-        logger.info(f"user={cleanusername(usrn)} event=username exists already")
+        logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=username_exists_already")
         return render_template("register.html", error="Username already exists"), 409
     finally:
         con.close()
@@ -258,18 +270,33 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     usrn = request.form.get("username", "")
     pw = request.form.get("password", "")
     if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
-            logger.warning(f"user={cleanusername(usrn)} event=Invalid username format")
+            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=invalid_username_format")
             return render_template("login.html", error="Invalid username or password"), 401
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
-            logger.warning(f"user={cleanusername(usrn)} event=invalid password format")
+            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=invalid_password_format")
             return render_template("login.html", error="Invalid username or password"), 401
     
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
+    block = con.execute("SELECT failures, window_start, blocked_until FROM login_blocks WHERE ip = ?", (request.remote_addr,)).fetchone()
+    if block is not None and block["blocked_until"] > time.time():
+        con.close()
+        logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=login_blocked_ip")
+        return render_template("login.html", error="Too many failed attempts, try again later"), 429
+    
     check = con.execute("SELECT user_id, pwhash FROM users WHERE username = ?",(usrn,)).fetchone()
     if (check is None or not bcrypt.checkpw(pw.encode("utf-8"), check["pwhash"])):
+        if block is None or time.time() - block["window_start"] > loginWindow:
+            con.execute("INSERT OR REPLACE INTO login_blocks (ip, failures, window_start, blocked_until) VALUES (?, 1, ?, 0)", (request.remote_addr, time.time()))
+        else:
+            fails = block["failures"] + 1
+            blockUser = time.time() + ipBlockTime if fails >= loginMaxFails else 0
+            con.execute("UPDATE login_blocks SET failures = ?, blocked_until = ? WHERE ip = ?", (fails, blockUser, request.remote_addr))
+            if blockUser:
+                logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=ip_blocked")
+        con.commit()
         con.close()
-        logger.warning(f"user={cleanusername(usrn)} event=incorrect credentials")
+        logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=incorrect_credentials")
         return render_template("login.html", error="Invalid username or password"), 401
     user_id = check["user_id"]
     con.close()
@@ -282,13 +309,13 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     session["created"] = time.time()
     session["last_seen"] = time.time()
     session["username"] = cleanusername(usrn)
-    logger.info(f"user={cleanusername(usrn)} event=user logged in")
+    logger.info(f"user={cleanusername(usrn)} event=user_logged_in")
     return redirect(url_for("userPage"))    
 
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout():
-    logger.info(f"user={cleanusername(session.get("username", "?"))} event=user logged out")
+    logger.info(f"user={cleanusername(session.get("username", "?"))} event=user_logged_out")
     usrkeys.pop(session["user_id"], None)
     session.clear()
     return redirect(url_for("welcomePage"))
@@ -298,7 +325,7 @@ def logout():
 @app.route("/password_update", methods=["GET"])
 @login_required
 def pwchangePage():
-    logger.error(f"user={cleanusername(session.get("username", "?"))} event=user somehow got in password change")
+    logger.error(f"user={cleanusername(session.get("username", "?"))} event=user_got_in_password_change")
     return render_template("pwchange.html") #when user decides OR is forced to change password, asks for usrname, old pw, new pw, new pw confirmation
 @app.route("/password_update", methods=["POST"])
 @login_required
@@ -325,21 +352,21 @@ def userPage(error=""):
 def upload():
     file = request.files.get("file")
     if file is None or file.filename == "" or file.filename == None:
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=empty file uploaded")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=empty_file_uploaded")
         return userPage("No file selected"), 400
     filename = secure_filename(file.filename)
     if not filename or len(filename) > maxnameL or len(filename) < 2:
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file name with invalid length")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=filename_with_invalid_length")
         return userPage("Invalid file name"), 400
     if "." not in filename or filename.rsplit(".", 1)[1].lower() not in allowedExt:
-        logger.warning(f"user={cleanusername(session.get("username","?"))} event=unallowed file extension")
+        logger.warning(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=unallowed_file_extension")
         return userPage("File type not allowed"), 415
     data = file.read()
     if len(data) == 0:
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=empty file")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=empty_file")
         return userPage("File is empty"), 400
     if len(data) > maxsize:
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file is too big")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file_is_too_big")
         return userPage("File too large"), 413
     hash = usrkeys[session["user_id"]]
     cipher = encrypt(data, hash)
@@ -348,7 +375,7 @@ def upload():
     try:
         count = con.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
         if count >= maxfiles:
-            logger.info(f"user={cleanusername(session.get("username","?"))} event=file limit reached for user")
+            logger.info(f"user={cleanusername(session.get("username","?"))} event=upload_file_limit_reached")
             return userPage("File limit reached"), 409
         file_id = new_file_id(con)
         con.execute("INSERT INTO files (file_id, user_id, filename) VALUES (?, ?, ?)", (file_id, session["user_id"], filename))
@@ -359,14 +386,14 @@ def upload():
         except OSError:
             if path and os.path.exists(path):
                 os.remove(path)
-            logger.error(f"user={cleanusername(session.get("username","?"))} event=server error during upload. OS related. deleting file")
+            logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=server_error_upload reason=os_error", exc_info=True)
             return userPage("Server error"), 500
         con.commit()
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file uploaded successfully")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file_uploaded_successfully")
     except Exception:
         if path and os.path.exists(path):
             os.remove(path) #files to be removed in case of an error while uploading
-        logger.error(f"user={cleanusername(session.get("username","?"))} event=server error during upload. deleting file")
+        logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=server_error_upload reason=other", exc_info=True)
         return userPage("Server error"), 500
     finally:
         con.close()
@@ -377,14 +404,14 @@ def upload():
 @login_required
 def download(file_id):
     if not valid_id(file_id):
-        logger.warning(f"user={cleanusername(session.get("username","?"))} event=invalid file id format")
+        logger.warning(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} file_id={cleanusername(file_id)} event=invalid_fileid_format")
         return userPage("File not found"), 404
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     try:
         row = con.execute("SELECT filename FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"])).fetchone()
         if row is None:
-            logger.warning(f"user={cleanusername(session.get("username","?"))} event=file id doesn't exist or doesn't belong to user")
+            logger.warning(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} file_id={file_id} event=fileid_doesnt_exist_or_doesnt_belong_to_user")
             return userPage("File not found"), 404
         hash = usrkeys[session["user_id"]]
         path =  os.path.join(fs, str(file_id))
@@ -392,16 +419,16 @@ def download(file_id):
             with open(path, "rb") as f:
                 cipher = f.read()
         except FileNotFoundError:
-            logger.error(f"user={cleanusername(session.get("username","?"))} event=file not found in server")
+            logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} file_id={file_id} event=file_not_found_in_server", exc_info=True)
             return userPage("File not found"), 404
         try:
             file = decrypt(cipher, hash)
         except(InvalidTag, ValueError):
-            logger.error(f"user={cleanusername(session.get("username","?"))} event=file can't be decrypted")
+            logger.error(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} file_id={file_id} event=file_cannot_be_decrypted", exc_info=True)
             return userPage("File could not be decrypted"), 500
         con.execute("UPDATE files SET last_download = CURRENT_TIMESTAMP WHERE file_id = ?", (file_id,))
         con.commit()
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file downloaded successfully")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file_downloaded_successfully")
     finally:
             con.close()
     return send_file(io.BytesIO(file), as_attachment=True, download_name=row["filename"])
@@ -412,22 +439,22 @@ def download(file_id):
 @login_required
 def delete(file_id):
     if not valid_id(file_id):
-            logger.warning(f"user={cleanusername(session.get("username","?"))} event=invalid file id format")
+            logger.warning(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} file_id={cleanusername(file_id)} event=invalid_file_id_format")
             return userPage("File not found"), 404
     con = sqlite3.connect(db)
     try:
         row2dlt = con.execute("DELETE FROM files WHERE file_id = ? AND user_id = ?", (file_id, session["user_id"]))
         if row2dlt.rowcount == 0:
-            logger.warning(f"user={cleanusername(session.get("username","?"))} event=file id doesn't exist or doesn't belong to user")
+            logger.warning(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} file_id={file_id} event=file_id_doesnt_exist_or_doesnt_belong_to_user")
             return userPage("File not found"), 404
         con.commit()
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file deleted correctly from db")
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file_deleted_correctly_from_db")
     finally:
         con.close()
     path = os.path.join(fs, str(file_id))
     if os.path.exists(path):
-        logger.info(f"user={cleanusername(session.get("username","?"))} event=file deleted correctly on server")
         os.remove(path)
+        logger.info(f"user={cleanusername(session.get("username","?"))} event=file_deleted_correctly_on_server")
     return redirect(url_for("userPage"))
 
 #Main
@@ -436,10 +463,10 @@ if __name__ == "__main__":
 
     init_lg()
     if not os.path.exists(db):
-        logger.warning(f"db does not exist. a new db is created")
+        logger.warning(f"db_does_not_exist_a_new_db_is_created")
         init_db()
     if not os.path.exists(fs):
-        logger.warning(f"server does not exist. a new server is created")
+        logger.warning(f"server_does_not_exist_a_new_server_is_created")
         init_fs()
 
     app.run(port=5000, debug=False, ssl_context="adhoc")

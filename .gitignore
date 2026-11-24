@@ -1,4 +1,5 @@
-databases/main.db
+databases
 logging.log
 files_storage
 venv
+__pycache__/
