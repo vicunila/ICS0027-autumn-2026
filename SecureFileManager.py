@@ -66,7 +66,7 @@ def encrypt(file, key):
 
     nonce = os.urandom(12)
     ciphered = AESGCM(key).encrypt(nonce, file, None)
-    return salt + nonce + ciphered
+    return nonce + ciphered
 
 
 def decrypt(ciphered, key): 
