@@ -2,4 +2,20 @@
 <meta charset="utf-8">
 <title>Password change</title>
 <h1>Password change</h1>
-<p>This page is a work in progress, please return to main page </p><a href="{{ url_for('welcomePage') }}">here</a>
+<p>{{ error }}</p>
+<form id="form" method="post" action="{{ url_for('pwchange') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  Old password <input type="password" name="old_password"><br>
+  New password <input type="password" name="new_password"><br>
+    <small>Password must be 8 to 20 characters long, with upper and lower case, a digit, and a special character</small><br>
+  Confirm new password <input type="password" name="confirm_new_password"><br>
+  <button type="submit">Change password</button>
+</form>
+{% if session.get('must_change_pw') %}
+<form method="post" action="{{ url_for('logout') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit">Back to welcome page</button>
+</form>
+{% else %}
+<a href="{{ url_for('userPage') }}">Back to your files</a>
+{% endif %}

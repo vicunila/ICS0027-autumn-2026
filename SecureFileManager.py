@@ -1,5 +1,5 @@
 #Made by Victor Laino
-#student number 251773ICVM
+#student number 251773IVCM
 import os
 import logging
 import logging.handlers
@@ -19,9 +19,6 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidTag
 
-#TODO before final handout: pw change
-
-
 # directories, locally simulates having some server structure
 MainDir = os.path.dirname(os.path.abspath(__file__)) #secure directory used
 db = os.path.join(MainDir, "databases", "main.db") #database
@@ -38,6 +35,7 @@ AllowedCharspw = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
 IdleTimeout = 30 * 60 #30min
 AuthTimeout = 10 * 60 #10min
 AbsoluteTimeout = 10 * 60 * 60 #10hrs
+PwMaxAge = 90 * 24 * 60 * 60 #90 days, max time user can hold password before being forced to change
 
 #IDs' variables
 AllowedCharsid = "0123456789abcdef" #needed for userIds or fileIds: HEX only
@@ -54,8 +52,8 @@ ChunkSize = 1000000
 
 #user block limits
 loginMaxFails = 5 #failed logins allowed from one ip
-loginWindow = 30 #30 min window for ip limit to reset (changed to 30s for testing)
-ipBlockTime = 1 * 60 #1 hr ip block time (changed to 1 min for testing)
+loginWindow = 30 * 60 #30 min window for ip limit to reset
+ipBlockTime = 1 * 60 * 60 #1 hr ip block time
 
 #cryptography
 SaltSize = 32
@@ -64,22 +62,17 @@ def password2key(password, salt):
     key = PBKDF2HMAC(algorithm=hashes.SHA256(), salt=salt, length=32, iterations=itrtns)
     return key.derive(password)
 
-def encrypt(file, password):
+def encrypt(file, key):
 
-    key = b'\x00'
-    salt = os.urandom(SaltSize)
     nonce = os.urandom(12)
-    key = password2key(password, salt)
     ciphered = AESGCM(key).encrypt(nonce, file, None)
     return salt + nonce + ciphered
 
 
-def decrypt(ciphered, password): 
+def decrypt(ciphered, key): 
 
-    salt = ciphered[:SaltSize]
-    nonce = ciphered[SaltSize:SaltSize + 12]
-    ciphertext = ciphered[SaltSize + 12:]
-    key = password2key(password, salt)
+    nonce = ciphered[:12]
+    ciphertext = ciphered[12:]
     file = AESGCM(key).decrypt(nonce, ciphertext, None)
     return file
 
@@ -105,7 +98,10 @@ def init_db():
     con.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY NOT NULL,
         username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        pwhash BLOB NOT NULL)""")
+        pwhash BLOB NOT NULL,
+        key_salt BLOB NOT NULL,
+        wrapped_key BLOB NOT NULL,
+        last_pw_change REAL NOT NULL DEFAULT 0)""")
     con.execute("""CREATE TABLE IF NOT EXISTS files (
         file_id TEXT PRIMARY KEY NOT NULL,
         user_id TEXT NOT NULL REFERENCES users(user_id),
@@ -159,6 +155,8 @@ def login_required(view):
         if  "user_id" not in session or session["user_id"] not in usrkeys or session.get("sessionid") is None or activeSession.get(session["user_id"]) != session["sessionid"]:
             logger.info(f"user={cleanusername(session.get("username","?"))} ip={request.remote_addr} event=unauthenticated_access")
             return redirect(url_for('loginPage'))
+        if session.get("must_change_pw") and request.endpoint not in ("pwchangePage", "pwchange", "logout"):
+            return redirect(url_for("pwchangePage"))
         return view(*args, **kwargs)
     return logincheck
 
@@ -239,11 +237,21 @@ def register():
     pwconf = request.form.get("confirm password", "")
 
     if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
-        logger.info(f"user={cleanusername(usrn)} event=invalid_username")
-        return render_template("register.html", error="Invalid username"), 400
-    if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
-        logger.info(f"user={cleanusername(usrn)} event=invalid_password_size")
-        return render_template("register.html", error="Invalid password"), 400
+        possiblebadactor = any(c not in AllowedCharsusrn for c in usrn)
+        if possiblebadactor:
+            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=bad_characters_in_username")
+            return render_template("register.html", error="Invalid username"), 400
+        else:
+            logger.info(f"user={cleanusername(usrn)} event=invalid_username_size")
+            return render_template("register.html", error="Invalid username"), 400
+    if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw) or any(c not in AllowedCharspw for c in pwconf):
+        possiblebadactor = (any(c not in AllowedCharspw for c in pw) or any(c not in AllowedCharspw for c in pwconf))
+        if possiblebadactor:
+            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=bad_characters_in_pw_or_pwconf")
+            return render_template("register.html", error="Invalid password"), 400
+        else:
+            logger.info(f"user={cleanusername(usrn)} event=invalid_password_size")
+            return render_template("register.html", error="Invalid password"), 400
     if not (re.search(r"[a-z]", pw) and re.search(r"[A-Z]", pw) and re.search(r"[0-9]", pw) and re.search(r"[!@#$%^&*]", pw)):
         logger.info(f"user={cleanusername(usrn)} event=weak_password")
         return render_template("register.html", error="Invalid password"), 400
@@ -255,7 +263,12 @@ def register():
     con = sqlite3.connect(db)
     try:
         user_id = new_user_id(con)
-        con.execute("INSERT INTO users (user_id, username, pwhash) VALUES (?, ?, ?)", (user_id, usrn, hashedPassword))
+        keySalt = os.urandom(SaltSize)
+        dek = secrets.token_bytes(32) #actual key that encrypts files, this key is stored encrypted in db
+        kek = password2key(pw.encode("utf-8"), keySalt) #to encrypt the dek, we use a key derived directly from the pw
+        nonce = os.urandom(12)
+        wrappedKey = nonce + AESGCM(kek).encrypt(nonce, dek, None)
+        con.execute("INSERT INTO users (user_id, username, pwhash, key_salt, wrapped_key, last_pw_change) VALUES (?, ?, ?, ?, ?, ?)", (user_id, usrn, hashedPassword, keySalt, wrappedKey, time.time()))
         con.commit()
         logger.info(f"user={cleanusername(usrn)} event=user_successfully_created")
     except sqlite3.IntegrityError:
@@ -277,10 +290,20 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     usrn = request.form.get("username", "")
     pw = request.form.get("password", "")
     if len(usrn) < minusrnL or len(usrn) > maxusrnL or any(c not in AllowedCharsusrn for c in usrn):
-            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=invalid_username_format")
+        possiblebadactor = any(c not in AllowedCharsusrn for c in usrn)
+        if possiblebadactor:
+            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=bad_characters_in_username")
+            return render_template("login.html", error="Invalid username or password"), 401
+        else:
+            logger.info(f"user={cleanusername(usrn)} event=invalid_username_size")
             return render_template("login.html", error="Invalid username or password"), 401
     if len(pw) < minpwL or len(pw) > maxpwL or any(c not in AllowedCharspw for c in pw):
-            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=invalid_password_format")
+        possiblebadactor = any(c not in AllowedCharspw for c in pw)
+        if possiblebadactor:
+            logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=bad_characters_in_pw")
+            return render_template("login.html", error="Invalid username or password"), 401
+        else:
+            logger.info(f"user={cleanusername(usrn)} event=invalid_password_size")
             return render_template("login.html", error="Invalid username or password"), 401
     
     con = sqlite3.connect(db)
@@ -288,10 +311,10 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     block = con.execute("SELECT failures, window_start, blocked_until FROM login_blocks WHERE ip = ?", (request.remote_addr,)).fetchone()
     if block is not None and block["blocked_until"] > time.time():
         con.close()
-        logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=login_blocked_ip")
+        logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=login_attempt_from_blocked_ip")
         return render_template("login.html", error="Too many failed attempts, try again later"), 429
     
-    check = con.execute("SELECT user_id, pwhash FROM users WHERE username = ?",(usrn,)).fetchone()
+    check = con.execute("SELECT user_id, pwhash, key_salt, wrapped_key, last_pw_change FROM users WHERE username = ?", (usrn,)).fetchone()
     if (check is None or not bcrypt.checkpw(pw.encode("utf-8"), check["pwhash"])):
         if block is None or time.time() - block["window_start"] > loginWindow:
             con.execute("INSERT OR REPLACE INTO login_blocks (ip, failures, window_start, blocked_until) VALUES (?, 1, ?, 0)", (request.remote_addr, time.time()))
@@ -300,7 +323,7 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
             blockUser = time.time() + ipBlockTime if fails >= loginMaxFails else 0
             con.execute("UPDATE login_blocks SET failures = ?, blocked_until = ? WHERE ip = ?", (fails, blockUser, request.remote_addr))
             if blockUser:
-                logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=ip_blocked")
+                logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=ip_has_been_blocked")
         con.commit()
         con.close()
         logger.warning(f"user={cleanusername(usrn)} ip={request.remote_addr} event=incorrect_credentials")
@@ -319,11 +342,20 @@ def login(): #to implement: check if user needs to change pw (had pw for over 4 
     sessionid = secrets.token_hex(16)
     activeSession[user_id] = sessionid
     session["sessionid"] = sessionid
-    usrkeys[user_id] = password2key(pw.encode("utf-8"), check["pwhash"])
+    kek = password2key(pw.encode("utf-8"), check["key_salt"])
+    nonce = check["wrapped_key"][:12]
+    wrapped_key = check["wrapped_key"][12:]
+    usrkeys[user_id] = AESGCM(kek).decrypt(nonce, wrapped_key, None)
     session["created"] = time.time()
     session["last_seen"] = time.time()
     session["username"] = cleanusername(usrn)
     logger.info(f"user={cleanusername(usrn)} event=user_logged_in")
+
+    session["must_change_pw"] = False
+    if time.time() - check["last_pw_change"] > PwMaxAge:
+        session["must_change_pw"] = True
+        logger.info(f"user={cleanusername(usrn)} event=password_expired")
+        return redirect(url_for("pwchangePage"))
     return redirect(url_for("userPage"))    
 
 @app.route("/logout", methods=["POST"])
@@ -335,19 +367,66 @@ def logout():
     session.clear()
     return redirect(url_for("welcomePage"))
 
-# PW CHANGE, to be implemented checkpoint 3
+# PW CHANGE
 
 @app.route("/password_update", methods=["GET"])
 @login_required
 def pwchangePage():
-    logger.error(f"user={cleanusername(session.get("username", "?"))} event=user_got_in_password_change")
-    return render_template("pwchange.html") #when user decides OR is forced to change password, asks for usrname, old pw, new pw, new pw confirmation
+    if session.get("must_change_pw"):
+        return render_template("pwchange.html", error="Your password is too old. Please change it.")
+    return render_template("pwchange.html")
+
 @app.route("/password_update", methods=["POST"])
 @login_required
 def pwchange():
+    oldpw = request.form.get("old_password", "")
+    newpw = request.form.get("new_password", "")
+    conf = request.form.get("confirm_new_password", "")
+    if len(newpw) < minpwL or len(newpw) > maxpwL or any(c not in AllowedCharspw for c in newpw):
+            logger.warning(f"user={cleanusername(session.get('username','?'))} ip={request.remote_addr} event=new_password_invalid_format")
+            return render_template("pwchange.html", error="New password  is invalid"), 400
+    if len(oldpw) < minpwL or len(oldpw) > maxpwL or any(c not in AllowedCharspw for c in oldpw):
+            logger.warning(f"user={cleanusername(session.get('username','?'))} ip={request.remote_addr} event=old_password_invalid_format")
+            return render_template("pwchange.html", error="Old password is incorrect"), 401
+    if not (re.search(r"[a-z]", newpw) and re.search(r"[A-Z]", newpw) and re.search(r"[0-9]", newpw) and re.search(r"[!@#$%^&*]", newpw)):
+            logger.info(f"user={cleanusername(session.get('username','?'))} event=weak_password")
+            return render_template("pwchange.html", error="New password  is invalid"), 400
+    if newpw != conf:
+            logger.info(f"user={cleanusername(session.get('username','?'))} event=passwords_dont_match")
+            return render_template("pwchange.html", error="Passwords do not match"), 400
+    if oldpw == newpw:
+            logger.info(f"user={cleanusername(session.get('username','?'))} event=old_pw_same_as_new_pw")
+            return render_template("pwchange.html", error="New password cannot be the same as old password"), 400
+    
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    try:
+        check = con.execute("SELECT pwhash, key_salt, wrapped_key FROM users WHERE user_id = ?", (session["user_id"],)).fetchone()
+        if check is None or not bcrypt.checkpw(oldpw.encode("utf-8"), check["pwhash"]):
+            logger.warning(f"user={cleanusername(session.get('username','?'))} ip={request.remote_addr} event=password_change_wrong_old_password")
+            return render_template("pwchange.html", error="Old password is incorrect"), 401
+
+        oldkek = password2key(oldpw.encode("utf-8"), check["key_salt"])
+        try:
+            dek = AESGCM(oldkek).decrypt(check["wrapped_key"][:12], check["wrapped_key"][12:], None)
+        except InvalidTag:
+            logger.error(f"user={cleanusername(session.get('username','?'))} ip={request.remote_addr} event=wrapped_key_cannot_be_unwrapped", exc_info=True)
+            return render_template("pwchange.html", error="Password could not be changed"), 500
+
+        keySalt = os.urandom(SaltSize)
+        newkek = password2key(newpw.encode("utf-8"), keySalt)
+        nonce = os.urandom(12)
+        newwrappedKey = nonce + AESGCM(newkek).encrypt(nonce, dek, None)
+        newhash = bcrypt.hashpw(newpw.encode("utf-8"), bcrypt.gensalt(rounds=12))
+        con.execute("UPDATE users SET pwhash = ?, key_salt = ?, wrapped_key = ?, last_pw_change = ? WHERE user_id = ?", (newhash, keySalt, newwrappedKey, time.time(), session["user_id"]))
+        con.commit()
+        logger.info(f"user={cleanusername(session.get('username','?'))} event=password_changed")
+    finally:
+        con.close()
     usrkeys.pop(session["user_id"], None)
+    activeSession.pop(session["user_id"], None)
     session.clear()
-    return redirect(url_for("welcomePage")) #temporary code, if triggered they will just log out user
+    return redirect(url_for("loginPage"))
 
 #UPLOAD
 
@@ -358,9 +437,10 @@ def userPage(error=""):
     con.row_factory = sqlite3.Row
     try:
         filelist = con.execute("SELECT file_id, filename, date_added, last_download FROM files WHERE user_id = ? ORDER BY date_added DESC", (session["user_id"],)).fetchall()
+        lastchange = con.execute("SELECT datetime(last_pw_change, 'unixepoch', 'localtime') FROM users WHERE user_id = ?", (session["user_id"],)).fetchone()[0]
     finally:
         con.close()
-    return render_template("files.html", files=filelist, error=error)
+    return render_template("files.html", files=filelist, lastchange=lastchange, error=error)
 
 @app.route("/files", methods=["POST"])
 @login_required
@@ -475,7 +555,7 @@ def delete(file_id):
                 while writtenbytes < size:
                     chunk = min(ChunkSize, size - writtenbytes)
                     f.write(b'\x00' * chunk)
-                    written += chunk
+                    writtenbytes += chunk
                 f.flush()
                 os.fsync(f.fileno())
             os.remove(file)
