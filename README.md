@@ -17,6 +17,8 @@ templates/
     pwchange.html
 ```
 
+The app, if absent, creates `databases/main.db`, `files_storage/`, and `logging.log`, they are added to .gitignore to prevent accidental commit
+
 ## Routes and features
 
 - `GET /` Main page
@@ -25,17 +27,17 @@ templates/
 - `POST /logout` Logout endpoint
 - `GET /register` Registration page
 - `POST /register` Endpoint for creating an account
-- `POST /files` Endpoint for uploading new files, needs to handle file size check and file "safety" check, include an error response for maximum files amount reached
-- `GET /files/<file_id>` Endpoint for downloading files, needs to handle ownership check
-- `GET /files` Endpoint for listing files, needs to handle empty case, only lists user's files
-- `GET /files/<file_id>/delete` Confirmation page before deleting a file
-- `DELETE /files/<file_id>/delete` Endpoint for deleting files from server, needs to handle ownership check
+- `POST /files` Endpoint for uploading new files
+- `GET /files/<file_id>` Endpoint for downloading files
+- `GET /files` Endpoint for listing files
+- `POST /files/<file_id>/delete` Endpoint for deleting a file
 - `GET /password_update` Password change page
-- `POST /password_update` Endpoint for changing password, needs to check old password and new password confirmation
+- `POST /password_update` Endpoint for changing password
 
-AES-GCM encryption in the server with key generated from password, currently implemented with AES-CBC\
+AES-GCM encryption in the server with key generated from password using PBKDF2HMAC\
 Session based auth with user input/upload cleaning\
-Users will have a unique id for verifying ownership alongside session tokens
+Users will have a unique id for verifying ownership alongside session tokens\
+Every POST form includes a csrf token check. Requests without valid token are rejected and the session is cleared.
 
 ## how to run locally
 
